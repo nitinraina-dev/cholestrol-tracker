@@ -320,3 +320,27 @@ export async function extractReportValues(fileUri, mimeType = 'image/jpeg') {
   ], 4096, REPORT_SCHEMA);
   return JSON.parse(text);
 }
+
+export async function chatAboutMeal(userMessage, history = [], mealAnalysis, report = null, language = 'english') {
+  const historyText = history.length
+    ? history.map(m => `${m.role === 'user' ? 'User' : 'Dietitian'}: ${m.text}`).join('\n') + '\n'
+    : '';
+
+  const prompt = `You are a clinical dietitian assistant. The user just scanned a meal.
+
+MEAL ANALYSIS:
+- Foods: ${mealAnalysis.foods?.join(', ')}
+- Risk: ${mealAnalysis.riskLevel} (${mealAnalysis.riskScore}/10) — ${mealAnalysis.canEat}
+- Saturated fat: ${mealAnalysis.nutrients?.saturatedFat}g, Cholesterol: ${mealAnalysis.nutrients?.cholesterol}mg, Fiber: ${mealAnalysis.nutrients?.fiber}g, Protein: ${mealAnalysis.nutrients?.protein}g
+${mealAnalysis.warnings?.length ? '- Warnings: ' + mealAnalysis.warnings.join('; ') : ''}
+${mealAnalysis.benefits?.length ? '- Benefits: ' + mealAnalysis.benefits.join('; ') : ''}
+${report ? `- Patient blood report: LDL ${report.ldl ?? 'N/A'}, HDL ${report.hdl ?? 'N/A'}, VLDL ${report.vldl ?? 'N/A'}, TG ${report.triglycerides ?? 'N/A'} mg/dL` : ''}
+
+Answer the user's question about this meal concisely (2-4 sentences max). Focus on cholesterol and nutrition impact.
+${langInstruction(language)}
+
+${historyText}User: ${userMessage}
+Dietitian:`;
+
+  return (await callAI([{ text: prompt }], 512, null, 0.7)).trim();
+}

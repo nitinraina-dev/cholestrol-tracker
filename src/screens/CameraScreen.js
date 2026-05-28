@@ -2,10 +2,11 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Image,
   ActivityIndicator, Alert, ScrollView, BackHandler,
+  TextInput, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { analyzeFoodImage, RateLimitError } from '../services/gemini';
+import { analyzeFoodImage, chatAboutMeal, RateLimitError } from '../services/gemini';
 import { saveMeal, getMeals } from '../services/storage';
 import { getLatestReport, getReports } from '../services/reportStorage';
 import { getDietPreference, getLanguagePreference } from '../services/settingsStorage';
@@ -26,6 +27,16 @@ const STATUS_DOT = {
   AVOID:           { color: '#FF4757' },
 };
 
+function FlashIcon({ active }) {
+  const c = active ? '#FFD700' : '#fff';
+  return (
+    <View style={{ width: 18, height: 24, alignItems: 'center', justifyContent: 'center' }}>
+      <View style={{ position: 'absolute', top: 0, left: 5, width: 8, height: 14, backgroundColor: c, borderTopLeftRadius: 2, borderTopRightRadius: 4, borderBottomRightRadius: 0, borderBottomLeftRadius: 0, transform: [{ skewX: '-10deg' }] }} />
+      <View style={{ position: 'absolute', bottom: 0, right: 5, width: 8, height: 14, backgroundColor: c, borderTopLeftRadius: 0, borderTopRightRadius: 0, borderBottomRightRadius: 2, borderBottomLeftRadius: 4, transform: [{ skewX: '-10deg' }] }} />
+    </View>
+  );
+}
+
 export default function CameraScreen({ navigation }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [mode, setMode] = useState('menu');
@@ -33,28 +44,26 @@ export default function CameraScreen({ navigation }) {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [latestReport, setLatestReport] = useState(null);
-  const [countdown, setCountdown] = useState(null); // seconds remaining, null = no wait
+  const [countdown, setCountdown] = useState(null);
+  const [flash, setFlash] = useState('off');
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
   const cameraRef = useRef(null);
   const menuOptionsRef = useRef(null);
-  const analyzeRef = useRef(null); // always points to latest analyze fn for countdown retry
+  const analyzeRef = useRef(null);
   const retryCountRef = useRef(0);
+  const scrollRef = useRef(null);
   const { registerRef } = useTour();
 
   useEffect(() => {
     registerRef('cameraMenuOptions', menuOptionsRef);
   }, [registerRef]);
 
-  // Handle Android hardware back button when in sub-screens
   useEffect(() => {
     const onBack = () => {
-      if (mode === 'camera' || mode === 'preview') {
-        reset();
-        return true;
-      }
-      if (mode === 'result') {
-        setMode('menu');
-        return true;
-      }
+      if (mode === 'camera' || mode === 'preview') { reset(); return true; }
+      if (mode === 'result') { setMode('menu'); return true; }
       return false;
     };
     const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
@@ -67,10 +76,7 @@ export default function CameraScreen({ navigation }) {
       Alert.alert('Permission required', 'Please allow photo library access in your device settings.');
       return;
     }
-    const res = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      quality: 0.7,
-    });
+    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
     if (!res.canceled && res.assets[0]) {
       setImageUri(res.assets[0].uri);
       setMode('preview');
@@ -92,7 +98,6 @@ export default function CameraScreen({ navigation }) {
     setMode('preview');
   };
 
-  // Countdown effect — ticks every second, auto-retries when it reaches 0
   useEffect(() => {
     if (countdown === null) return;
     if (countdown <= 0) { analyzeRef.current?.(); return; }
@@ -109,6 +114,7 @@ export default function CameraScreen({ navigation }) {
       const analysis = await analyzeFoodImage(imageUri, report, diet, lang);
       retryCountRef.current = 0;
       setResult(analysis);
+      setChatMessages([]);
       setMode('result');
       setLoading(false);
     } catch (e) {
@@ -122,29 +128,54 @@ export default function CameraScreen({ navigation }) {
       }
     }
   };
-  analyzeRef.current = analyze; // keep ref fresh every render
+  analyzeRef.current = analyze;
+
+  const sendChat = async () => {
+    const text = chatInput.trim();
+    if (!text || chatLoading) return;
+    const userMsg = { id: Date.now().toString(), role: 'user', text };
+    const updated = [...chatMessages, userMsg];
+    setChatMessages(updated);
+    setChatInput('');
+    setChatLoading(true);
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+    try {
+      const lang = await getLanguagePreference();
+      const reply = await chatAboutMeal(text, chatMessages, result, latestReport, lang);
+      const aiMsg = { id: (Date.now() + 1).toString(), role: 'ai', text: reply };
+      setChatMessages(prev => [...prev, aiMsg]);
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+    } catch {
+      setChatMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'ai', text: 'Sorry, could not get a response. Please try again.' }]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
 
   const saveAndGoHome = async () => {
-    await saveMeal({
-      id: Date.now().toString(),
-      timestamp: new Date().toISOString(),
-      imageUri,
-      analysis: result,
-    });
+    await saveMeal({ id: Date.now().toString(), timestamp: new Date().toISOString(), imageUri, analysis: result });
     const [allMeals, allReports] = await Promise.all([getMeals(), getReports()]);
     await refreshBadges(allMeals, allReports);
     reset();
     navigation.navigate('HomeTab');
   };
 
-  const reset = () => { setMode('menu'); setImageUri(null); setResult(null); };
+  const reset = () => { setMode('menu'); setImageUri(null); setResult(null); setChatMessages([]); setChatInput(''); };
 
   // ── Camera view ────────────────────────────────────────────────────────────
   if (mode === 'camera') {
     return (
       <View style={styles.full}>
-        <CameraView ref={cameraRef} style={styles.full} facing="back">
+        <CameraView ref={cameraRef} style={styles.full} facing="back" flash={flash}>
           <View style={styles.cameraOverlay}>
+            <View style={styles.cameraTopBar}>
+              <TouchableOpacity style={[styles.flashBtn, flash === 'on' && styles.flashBtnOn]} onPress={() => setFlash(f => f === 'off' ? 'on' : 'off')}>
+                <FlashIcon active={flash === 'on'} />
+                <Text style={[styles.flashBtnText, flash === 'on' && styles.flashBtnTextOn]}>
+                  {flash === 'on' ? 'ON' : 'OFF'}
+                </Text>
+              </TouchableOpacity>
+            </View>
             <View style={styles.cameraFrame} />
             <Text style={styles.cameraHint}>Point at your meal</Text>
             <View style={styles.cameraControls}>
@@ -173,9 +204,7 @@ export default function CameraScreen({ navigation }) {
               <ActivityIndicator size="large" color="#6C63FF" />
               <Text style={styles.loadingTitle}>Analyzing your meal</Text>
               <Text style={styles.loadingHint}>
-                {countdown !== null
-                  ? `Ready in ${countdown}s`
-                  : 'Checking VLDL, LDL and Triglycerides impact'}
+                {countdown !== null ? `Ready in ${countdown}s` : 'Checking VLDL, LDL and Triglycerides impact'}
               </Text>
               {latestReport && (
                 <View style={styles.loadingReportBadge}>
@@ -204,74 +233,117 @@ export default function CameraScreen({ navigation }) {
     const dot = result.canEat ? (STATUS_DOT[result.canEat] || STATUS_DOT['IN MODERATION']) : null;
 
     return (
-      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-        <Image source={{ uri: imageUri }} style={styles.resultImage} resizeMode="cover" />
+      <KeyboardAvoidingView style={styles.full} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <ScrollView ref={scrollRef} style={styles.container} showsVerticalScrollIndicator={false}>
+          <Image source={{ uri: imageUri }} style={styles.resultImage} resizeMode="cover" />
 
-        <View style={styles.resultContent}>
-          {cfg && (
-            <View style={[styles.canEatCard, { backgroundColor: cfg.bg, borderColor: cfg.border }]}>
-              <View style={[styles.canEatDot, { backgroundColor: dot.color }]} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.canEatLabel, { color: cfg.color }]}>{cfg.label}</Text>
-                <Text style={styles.canEatSub}>{result.personalizedAdvice || cfg.sub}</Text>
+          <View style={styles.resultContent}>
+            {cfg && (
+              <View style={[styles.canEatCard, { backgroundColor: cfg.bg, borderColor: cfg.border }]}>
+                <View style={[styles.canEatDot, { backgroundColor: dot.color }]} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.canEatLabel, { color: cfg.color }]}>{cfg.label}</Text>
+                  <Text style={styles.canEatSub}>{result.personalizedAdvice || cfg.sub}</Text>
+                </View>
               </View>
+            )}
+
+            <View style={styles.resultHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.resultFoods}>{result.foods?.join(', ')}</Text>
+                <Text style={styles.resultServing}>{result.servingNote}</Text>
+              </View>
+              <RiskBadge level={result.riskLevel} score={result.riskScore} />
             </View>
-          )}
 
-          <View style={styles.resultHeader}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.resultFoods}>{result.foods?.join(', ')}</Text>
-              <Text style={styles.resultServing}>{result.servingNote}</Text>
-            </View>
-            <RiskBadge level={result.riskLevel} score={result.riskScore} />
-          </View>
-
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Estimated Nutrients</Text>
-            {Object.entries(result.nutrients || {}).map(([k, v]) => (
-              <NutrientRow key={k} name={k} value={v} />
-            ))}
-          </View>
-
-          {result.warnings?.length > 0 && (
-            <View style={[styles.card, styles.warnCard]}>
-              <Text style={styles.cardTitle}>Cholesterol Warnings</Text>
-              {result.warnings.map((w, i) => (
-                <View key={i} style={styles.warnRow}>
-                  <View style={styles.warnBullet} />
-                  <Text style={styles.warnText}>{w}</Text>
-                </View>
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Estimated Nutrients</Text>
+              {Object.entries(result.nutrients || {}).map(([k, v]) => (
+                <NutrientRow key={k} name={k} value={v} />
               ))}
             </View>
-          )}
 
-          {result.benefits?.length > 0 && (
-            <View style={[styles.card, styles.benefitCard]}>
-              <Text style={styles.cardTitle}>Benefits</Text>
-              {result.benefits.map((b, i) => (
-                <View key={i} style={styles.benefitRow}>
-                  <View style={styles.benefitBullet} />
-                  <Text style={styles.benefitText}>{b}</Text>
+            {result.warnings?.length > 0 && (
+              <View style={[styles.card, styles.warnCard]}>
+                <Text style={styles.cardTitle}>Cholesterol Warnings</Text>
+                {result.warnings.map((w, i) => (
+                  <View key={i} style={styles.warnRow}>
+                    <View style={styles.warnBullet} />
+                    <Text style={styles.warnText}>{w}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {result.benefits?.length > 0 && (
+              <View style={[styles.card, styles.benefitCard]}>
+                <Text style={styles.cardTitle}>Benefits</Text>
+                {result.benefits.map((b, i) => (
+                  <View key={i} style={styles.benefitRow}>
+                    <View style={styles.benefitBullet} />
+                    <Text style={styles.benefitText}>{b}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {result.recommendation && (
+              <View style={[styles.card, styles.recCard]}>
+                <Text style={styles.cardTitle}>Recommendation</Text>
+                <Text style={styles.recText}>{result.recommendation}</Text>
+              </View>
+            )}
+
+            <TouchableOpacity style={styles.saveBtn} onPress={saveAndGoHome}>
+              <Text style={styles.saveBtnText}>Save to Log</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.discardBtn} onPress={reset}>
+              <Text style={styles.discardBtnText}>Discard</Text>
+            </TouchableOpacity>
+
+            {/* ── Chat section ── */}
+            <View style={styles.chatSection}>
+              <Text style={styles.chatSectionTitle}>Ask about this meal</Text>
+              {chatMessages.length === 0 && (
+                <View style={styles.chatEmptyHint}>
+                  <Text style={styles.chatEmptyText}>Ask anything — "Can I eat this daily?", "What can I have instead?", "How much protein is this?"</Text>
+                </View>
+              )}
+              {chatMessages.map(msg => (
+                <View key={msg.id} style={msg.role === 'user' ? styles.userBubble : styles.aiBubble}>
+                  <Text style={msg.role === 'user' ? styles.userBubbleText : styles.aiBubbleText}>{msg.text}</Text>
                 </View>
               ))}
+              {chatLoading && (
+                <View style={styles.aiBubble}>
+                  <ActivityIndicator size="small" color="#6C63FF" />
+                </View>
+              )}
             </View>
-          )}
+            <View style={{ height: 80 }} />
+          </View>
+        </ScrollView>
 
-          {result.recommendation && (
-            <View style={[styles.card, styles.recCard]}>
-              <Text style={styles.cardTitle}>Recommendation</Text>
-              <Text style={styles.recText}>{result.recommendation}</Text>
-            </View>
-          )}
-
-          <TouchableOpacity style={styles.saveBtn} onPress={saveAndGoHome}>
-            <Text style={styles.saveBtnText}>Save to Log</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.discardBtn} onPress={reset}>
-            <Text style={styles.discardBtnText}>Discard</Text>
+        {/* Sticky chat input */}
+        <View style={styles.chatInputBar}>
+          <TextInput
+            style={styles.chatInput}
+            value={chatInput}
+            onChangeText={setChatInput}
+            placeholder="Ask about this meal..."
+            placeholderTextColor="#C5C6D0"
+            returnKeyType="send"
+            onSubmitEditing={sendChat}
+          />
+          <TouchableOpacity
+            style={[styles.chatSendBtn, (!chatInput.trim() || chatLoading) && styles.chatSendBtnDisabled]}
+            onPress={sendChat}
+            disabled={!chatInput.trim() || chatLoading}
+          >
+            <View style={styles.sendArrow} />
           </TouchableOpacity>
         </View>
-      </ScrollView>
+      </KeyboardAvoidingView>
     );
   }
 
@@ -287,7 +359,6 @@ export default function CameraScreen({ navigation }) {
       <View ref={menuOptionsRef} collapsable={false} style={styles.menuOptions}>
         <TouchableOpacity style={[styles.menuBtn, styles.menuBtnPrimary]} onPress={openCamera} activeOpacity={0.75}>
           <View style={[styles.menuBtnIconBox, { backgroundColor: '#ffffff22' }]}>
-            {/* Camera icon using views */}
             <View style={styles.cameraIconBody}>
               <View style={styles.cameraIconLens} />
             </View>
@@ -301,7 +372,6 @@ export default function CameraScreen({ navigation }) {
 
         <TouchableOpacity style={[styles.menuBtn, styles.menuBtnSecondary]} onPress={pickFromGallery} activeOpacity={0.75}>
           <View style={[styles.menuBtnIconBox, { backgroundColor: '#6C63FF12' }]}>
-            {/* Gallery icon using views */}
             <View style={styles.galleryIconOuter}>
               <View style={styles.galleryIconInner} />
             </View>
@@ -330,6 +400,15 @@ const styles = StyleSheet.create({
 
   // Camera
   cameraOverlay: { flex: 1, justifyContent: 'space-between', padding: 20, paddingTop: 60, paddingBottom: 50 },
+  cameraTopBar: { flexDirection: 'row', justifyContent: 'flex-end' },
+  flashBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#00000066', paddingHorizontal: 14, paddingVertical: 8,
+    borderRadius: 20, borderWidth: 1, borderColor: '#ffffff44',
+  },
+  flashBtnOn: { backgroundColor: '#00000099', borderColor: '#FFD700' },
+  flashBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  flashBtnTextOn: { color: '#FFD700' },
   cameraFrame: {
     position: 'absolute', top: '25%', left: '10%', right: '10%', bottom: '30%',
     borderWidth: 2, borderColor: '#6C63FF', borderRadius: 16,
@@ -378,8 +457,40 @@ const styles = StyleSheet.create({
   recText: { fontSize: 14, color: '#3730A3', lineHeight: 21 },
   saveBtn: { backgroundColor: '#6C63FF', padding: 18, borderRadius: 16, alignItems: 'center', marginTop: 8, marginBottom: 10, shadowColor: '#6C63FF', shadowOpacity: 0.3, shadowRadius: 12, elevation: 4 },
   saveBtnText: { color: '#fff', fontSize: 16, fontWeight: '800' },
-  discardBtn: { padding: 14, alignItems: 'center', marginBottom: 32 },
+  discardBtn: { padding: 14, alignItems: 'center', marginBottom: 8 },
   discardBtnText: { color: '#FF4757', fontSize: 15, fontWeight: '600' },
+
+  // Chat
+  chatSection: { marginTop: 8 },
+  chatSectionTitle: { fontSize: 12, fontWeight: '800', color: '#8E8E93', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 },
+  chatEmptyHint: { backgroundColor: '#EEF0FF', borderRadius: 14, padding: 14, marginBottom: 8 },
+  chatEmptyText: { fontSize: 13, color: '#6C63FF', lineHeight: 19 },
+  userBubble: { alignSelf: 'flex-end', backgroundColor: '#6C63FF', borderRadius: 16, borderBottomRightRadius: 4, padding: 12, marginBottom: 8, maxWidth: '80%' },
+  userBubbleText: { color: '#fff', fontSize: 14, lineHeight: 20 },
+  aiBubble: { alignSelf: 'flex-start', backgroundColor: '#fff', borderRadius: 16, borderBottomLeftRadius: 4, padding: 12, marginBottom: 8, maxWidth: '80%', shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 6, elevation: 1, minWidth: 48, minHeight: 40, justifyContent: 'center' },
+  aiBubbleText: { color: '#1A1A2E', fontSize: 14, lineHeight: 20 },
+  chatInputBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: '#fff', padding: 12,
+    borderTopWidth: 0.5, borderTopColor: '#E5E5EA',
+    shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 8, elevation: 4,
+  },
+  chatInput: {
+    flex: 1, backgroundColor: '#F2F2F7', borderRadius: 22,
+    paddingHorizontal: 16, paddingVertical: 10,
+    fontSize: 15, color: '#1A1A2E',
+  },
+  chatSendBtn: {
+    width: 42, height: 42, borderRadius: 21,
+    backgroundColor: '#6C63FF', alignItems: 'center', justifyContent: 'center',
+  },
+  chatSendBtnDisabled: { backgroundColor: '#C7C7CC' },
+  sendArrow: {
+    width: 0, height: 0,
+    borderTopWidth: 7, borderBottomWidth: 7, borderLeftWidth: 12,
+    borderTopColor: 'transparent', borderBottomColor: 'transparent', borderLeftColor: '#fff',
+    marginLeft: 3,
+  },
 
   // Menu
   menuContainer: { flex: 1, backgroundColor: '#F2F2F7', padding: 24, justifyContent: 'center' },
@@ -392,10 +503,8 @@ const styles = StyleSheet.create({
   menuBtnPrimary: { backgroundColor: '#6C63FF', shadowColor: '#6C63FF', shadowOpacity: 0.3, shadowRadius: 14, shadowOffset: { width: 0, height: 4 }, elevation: 6 },
   menuBtnSecondary: { backgroundColor: '#fff', shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 10, shadowOffset: { width: 0, height: 2 }, elevation: 2 },
   menuBtnIconBox: { width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  // Camera icon
   cameraIconBody: { width: 28, height: 20, borderRadius: 4, borderWidth: 2, borderColor: '#fff', alignItems: 'center', justifyContent: 'center' },
   cameraIconLens: { width: 10, height: 10, borderRadius: 5, borderWidth: 2, borderColor: '#fff' },
-  // Gallery icon
   galleryIconOuter: { width: 26, height: 22, borderRadius: 4, borderWidth: 2, borderColor: '#6C63FF', alignItems: 'flex-end', justifyContent: 'flex-end', padding: 2 },
   galleryIconInner: { width: 12, height: 10, borderRadius: 2, backgroundColor: '#6C63FF', opacity: 0.5 },
   menuBtnTitle: { fontSize: 16, fontWeight: '700', color: '#000' },
