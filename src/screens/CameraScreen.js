@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { analyzeFoodImage, chatAboutMeal, RateLimitError } from '../services/gemini';
+import { analyzeFoodImage, chatAboutMeal, recalculateMealScore, RateLimitError } from '../services/gemini';
 import { saveMeal, getMeals } from '../services/storage';
 import { getLatestReport, getReports } from '../services/reportStorage';
 import { getDietPreference, getLanguagePreference } from '../services/settingsStorage';
@@ -49,6 +49,8 @@ export default function CameraScreen({ navigation }) {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
+  const [showRecalculate, setShowRecalculate] = useState(false);
+  const [recalculating, setRecalculating] = useState(false);
   const cameraRef = useRef(null);
   const menuOptionsRef = useRef(null);
   const analyzeRef = useRef(null);
@@ -144,11 +146,27 @@ export default function CameraScreen({ navigation }) {
       const reply = await chatAboutMeal(text, chatMessages, result, latestReport, lang);
       const aiMsg = { id: (Date.now() + 1).toString(), role: 'ai', text: reply };
       setChatMessages(prev => [...prev, aiMsg]);
+      setShowRecalculate(true);
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
     } catch {
       setChatMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'ai', text: 'Sorry, could not get a response. Please try again.' }]);
     } finally {
       setChatLoading(false);
+    }
+  };
+
+  const recalculate = async () => {
+    setShowRecalculate(false);
+    setRecalculating(true);
+    try {
+      const lang = await getLanguagePreference();
+      const updated = await recalculateMealScore(result, chatMessages, latestReport, lang);
+      setResult(updated);
+      setTimeout(() => scrollRef.current?.scrollTo({ y: 0, animated: true }), 100);
+    } catch {
+      // silently ignore — keep existing result
+    } finally {
+      setRecalculating(false);
     }
   };
 
@@ -160,7 +178,7 @@ export default function CameraScreen({ navigation }) {
     navigation.navigate('HomeTab');
   };
 
-  const reset = () => { setMode('menu'); setImageUri(null); setResult(null); setChatMessages([]); setChatInput(''); };
+  const reset = () => { setMode('menu'); setImageUri(null); setResult(null); setChatMessages([]); setChatInput(''); setShowRecalculate(false); };
 
   // ── Camera view ────────────────────────────────────────────────────────────
   if (mode === 'camera') {
@@ -233,7 +251,7 @@ export default function CameraScreen({ navigation }) {
     const dot = result.canEat ? (STATUS_DOT[result.canEat] || STATUS_DOT['IN MODERATION']) : null;
 
     return (
-      <KeyboardAvoidingView style={styles.full} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+      <KeyboardAvoidingView style={styles.full} behavior="padding" keyboardVerticalOffset={Platform.OS === 'android' ? 0 : 0}>
         <ScrollView ref={scrollRef} style={styles.container} showsVerticalScrollIndicator={false}>
           <Image source={{ uri: imageUri }} style={styles.resultImage} resizeMode="cover" />
 
@@ -315,8 +333,27 @@ export default function CameraScreen({ navigation }) {
                 </View>
               ))}
               {chatLoading && (
-                <View style={styles.aiBubble}>
+                <View style={styles.aiBubbleLoading}>
                   <ActivityIndicator size="small" color="#6C63FF" />
+                </View>
+              )}
+              {showRecalculate && !chatLoading && (
+                <View style={styles.recalcBanner}>
+                  <Text style={styles.recalcBannerText}>Chat added new context — want me to update the score?</Text>
+                  <View style={styles.recalcBannerRow}>
+                    <TouchableOpacity style={styles.recalcYes} onPress={recalculate}>
+                      <Text style={styles.recalcYesText}>Update Score</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.recalcNo} onPress={() => setShowRecalculate(false)}>
+                      <Text style={styles.recalcNoText}>Dismiss</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+              {recalculating && (
+                <View style={styles.recalcingRow}>
+                  <ActivityIndicator size="small" color="#6C63FF" />
+                  <Text style={styles.recalcingText}>Recalculating score...</Text>
                 </View>
               )}
             </View>
@@ -466,9 +503,19 @@ const styles = StyleSheet.create({
   chatEmptyHint: { backgroundColor: '#EEF0FF', borderRadius: 14, padding: 14, marginBottom: 8 },
   chatEmptyText: { fontSize: 13, color: '#6C63FF', lineHeight: 19 },
   userBubble: { alignSelf: 'flex-end', backgroundColor: '#6C63FF', borderRadius: 16, borderBottomRightRadius: 4, padding: 12, marginBottom: 8, maxWidth: '80%' },
-  userBubbleText: { color: '#fff', fontSize: 14, lineHeight: 20 },
-  aiBubble: { alignSelf: 'flex-start', backgroundColor: '#fff', borderRadius: 16, borderBottomLeftRadius: 4, padding: 12, marginBottom: 8, maxWidth: '80%', shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 6, elevation: 1, minWidth: 48, minHeight: 40, justifyContent: 'center' },
-  aiBubbleText: { color: '#1A1A2E', fontSize: 14, lineHeight: 20 },
+  userBubbleText: { color: '#fff', fontSize: 14, lineHeight: 20, flexShrink: 1 },
+  aiBubble: { alignSelf: 'flex-start', backgroundColor: '#fff', borderRadius: 16, borderBottomLeftRadius: 4, padding: 12, marginBottom: 8, maxWidth: '80%', shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 6, elevation: 1 },
+  aiBubbleText: { color: '#1A1A2E', fontSize: 14, lineHeight: 20, flexShrink: 1 },
+  aiBubbleLoading: { alignSelf: 'flex-start', backgroundColor: '#fff', borderRadius: 16, borderBottomLeftRadius: 4, padding: 12, marginBottom: 8, minWidth: 48, minHeight: 40, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 6, elevation: 1, alignItems: 'center', justifyContent: 'center' },
+  recalcBanner: { backgroundColor: '#EEF0FF', borderRadius: 14, padding: 14, marginTop: 4, marginBottom: 8, borderWidth: 1, borderColor: '#6C63FF33' },
+  recalcBannerText: { fontSize: 13, color: '#3730A3', lineHeight: 18, marginBottom: 10 },
+  recalcBannerRow: { flexDirection: 'row', gap: 10 },
+  recalcYes: { flex: 1, backgroundColor: '#6C63FF', borderRadius: 10, paddingVertical: 9, alignItems: 'center' },
+  recalcYesText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  recalcNo: { paddingHorizontal: 14, paddingVertical: 9, alignItems: 'center', justifyContent: 'center' },
+  recalcNoText: { color: '#8E8E93', fontSize: 13, fontWeight: '600' },
+  recalcingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
+  recalcingText: { fontSize: 13, color: '#6C63FF', fontWeight: '600' },
   chatInputBar: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     backgroundColor: '#fff', padding: 12,

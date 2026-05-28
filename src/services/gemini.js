@@ -321,6 +321,26 @@ export async function extractReportValues(fileUri, mimeType = 'image/jpeg') {
   return JSON.parse(text);
 }
 
+export async function recalculateMealScore(originalAnalysis, chatHistory, report = null, language = 'english') {
+  const historyText = chatHistory.map(m => `${m.role === 'user' ? 'User' : 'Dietitian'}: ${m.text}`).join('\n');
+  const prompt = `You are a clinical dietitian. A meal was analyzed and the user provided additional context through conversation. Revise the analysis based on that context.
+
+ORIGINAL ANALYSIS:
+- Foods: ${originalAnalysis.foods?.join(', ')}
+- Risk: ${originalAnalysis.riskLevel} (${originalAnalysis.riskScore}/10) — ${originalAnalysis.canEat}
+- Nutrients: saturatedFat ${originalAnalysis.nutrients?.saturatedFat}g, transFat ${originalAnalysis.nutrients?.transFat}g, cholesterol ${originalAnalysis.nutrients?.cholesterol}mg, totalCarbs ${originalAnalysis.nutrients?.totalCarbs}g, sugar ${originalAnalysis.nutrients?.sugar}g, fiber ${originalAnalysis.nutrients?.fiber}g, omega3 ${originalAnalysis.nutrients?.omega3}g, protein ${originalAnalysis.nutrients?.protein}g
+- servingNote: ${originalAnalysis.servingNote}
+${report ? `- Blood report: LDL ${report.ldl ?? 'N/A'}, HDL ${report.hdl ?? 'N/A'}, VLDL ${report.vldl ?? 'N/A'}, TG ${report.triglycerides ?? 'N/A'} mg/dL` : ''}
+
+CONVERSATION CONTEXT:
+${historyText}
+
+Update the analysis based on the conversation (e.g. portion size, cooking method, extra ingredients). If nothing meaningful changed, keep original values but freshen personalizedAdvice.
+${langInstruction(language)}`;
+  const text = await callAI([{ text: prompt }], 2048, FOOD_SCHEMA, 0.3);
+  return JSON.parse(text);
+}
+
 export async function chatAboutMeal(userMessage, history = [], mealAnalysis, report = null, language = 'english') {
   const historyText = history.length
     ? history.map(m => `${m.role === 'user' ? 'User' : 'Dietitian'}: ${m.text}`).join('\n') + '\n'
