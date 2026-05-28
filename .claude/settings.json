@@ -1,4 +1,11 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(node -e ' *)",
+      "Bash(node -e \"const fs = require\\('fs'\\); const pkg = JSON.parse\\(fs.readFileSync\\('./node_modules/expo-file-system/package.json', 'utf8'\\)\\); console.log\\('expo-file-system version:', pkg.version\\);\")",
+      "Bash(brew --version)"
+    ]
+  },
   "enabledPlugins": {
     "expo@claude-plugins-official": true
   }
