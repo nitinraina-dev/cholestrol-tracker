@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { analyzeFoodImage, analyzeProductText, chatAboutMeal, recalculateMealScore, RateLimitError } from '../services/gemini';
+import { analyzeFoodImage, analyzeTextMeal, analyzeProductText, chatAboutMeal, recalculateMealScore, RateLimitError } from '../services/gemini';
 import { saveMeal, getMeals } from '../services/storage';
 import { getLatestReport, getReports } from '../services/reportStorage';
 import { getDietPreference, getLanguagePreference } from '../services/settingsStorage';
@@ -68,6 +68,8 @@ export default function CameraScreen({ navigation }) {
   const [showNutrientGuide, setShowNutrientGuide] = useState(false);
   const [barcodeScanned, setBarcodeScanned] = useState(false);
   const [barcodeLoading, setBarcodeLoading] = useState(false);
+  const [foodHint, setFoodHint] = useState('');
+  const [textDescription, setTextDescription] = useState('');
   const cameraRef = useRef(null);
   const menuOptionsRef = useRef(null);
   const analyzeRef = useRef(null);
@@ -146,7 +148,7 @@ export default function CameraScreen({ navigation }) {
     try {
       const [report, diet, lang] = await Promise.all([getLatestReport(), getDietPreference(), getLanguagePreference()]);
       setLatestReport(report);
-      const analysis = await analyzeFoodImage(imageUri, report, diet, lang);
+      const analysis = await analyzeFoodImage(imageUri, report, diet, lang, foodHint);
       retryCountRef.current = 0;
       setResult(analysis);
       setOriginalResult(analysis);
@@ -165,6 +167,25 @@ export default function CameraScreen({ navigation }) {
     }
   };
   analyzeRef.current = analyze;
+
+  const analyzeText = async () => {
+    const desc = textDescription.trim();
+    if (!desc) return;
+    setLoading(true);
+    try {
+      const [report, diet, lang] = await Promise.all([getLatestReport(), getDietPreference(), getLanguagePreference()]);
+      setLatestReport(report);
+      const analysis = await analyzeTextMeal(desc, report, diet, lang);
+      setResult(analysis);
+      setOriginalResult(analysis);
+      setChatMessages([]);
+      setMode('result');
+    } catch {
+      Alert.alert('Unable to analyze', 'Please try again in a few minutes.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const sendChat = async () => {
     const text = chatInput.trim();
@@ -208,14 +229,14 @@ export default function CameraScreen({ navigation }) {
   };
 
   const saveAndGoHome = async () => {
-    await saveMeal({ id: Date.now().toString(), timestamp: new Date().toISOString(), imageUri, analysis: result });
+    await saveMeal({ id: Date.now().toString(), timestamp: new Date().toISOString(), imageUri: imageUri || null, textDescription: textDescription.trim() || null, analysis: result });
     const [allMeals, allReports] = await Promise.all([getMeals(), getReports()]);
     await refreshBadges(allMeals, allReports);
     reset();
     navigation.navigate('HomeTab');
   };
 
-  const reset = () => { setMode('menu'); setImageUri(null); setResult(null); setOriginalResult(null); setScoreComparison(null); setChatMessages([]); setChatInput(''); setShowRecalculate(false); setBarcodeScanned(false); setBarcodeLoading(false); };
+  const reset = () => { setMode('menu'); setImageUri(null); setResult(null); setOriginalResult(null); setScoreComparison(null); setChatMessages([]); setChatInput(''); setShowRecalculate(false); setBarcodeScanned(false); setBarcodeLoading(false); setFoodHint(''); setTextDescription(''); };
 
   const openBarcodeScanner = async () => {
     if (!permission?.granted) {
@@ -362,16 +383,77 @@ export default function CameraScreen({ navigation }) {
               )}
             </View>
           ) : (
-            <View style={styles.previewActions}>
-              <TouchableOpacity style={styles.retakeBtn} onPress={reset}>
-                <Text style={styles.retakeBtnText}>Retake</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.analyzeBtn} onPress={analyze}>
-                <Text style={styles.analyzeBtnText}>Analyze Meal</Text>
-              </TouchableOpacity>
+            <View style={styles.previewBottom}>
+              <View style={styles.hintBox}>
+                <Text style={styles.hintLabel}>What are you eating? (optional)</Text>
+                <TextInput
+                  style={styles.hintInput}
+                  value={foodHint}
+                  onChangeText={setFoodHint}
+                  placeholder='e.g. "tofu stir fry with broccoli"'
+                  placeholderTextColor="#9CA3AF"
+                  returnKeyType="done"
+                  maxLength={120}
+                />
+              </View>
+              <View style={styles.previewActions}>
+                <TouchableOpacity style={styles.retakeBtn} onPress={reset}>
+                  <Text style={styles.retakeBtnText}>Retake</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.analyzeBtn} onPress={analyze}>
+                  <Text style={styles.analyzeBtnText}>Analyze Meal</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           )}
         </View>
+      </View>
+    );
+  }
+
+  // ── Text log view ──────────────────────────────────────────────────────────
+  if (mode === 'textlog') {
+    return (
+      <View style={[styles.full, { backgroundColor: '#F2F2F7' }]}>
+        <View style={styles.textlogHeader}>
+          <TouchableOpacity style={styles.cancelBtn} onPress={reset}>
+            <Text style={styles.cancelBtnText}>Cancel</Text>
+          </TouchableOpacity>
+          <Text style={styles.textlogTitle}>Describe Your Meal</Text>
+          <View style={{ width: 60 }} />
+        </View>
+        {loading ? (
+          <View style={styles.textlogLoading}>
+            <ActivityIndicator size="large" color="#6C63FF" />
+            <Text style={styles.loadingTitle}>Analyzing your meal</Text>
+            <Text style={styles.loadingHint}>Checking VLDL, LDL and Triglycerides impact</Text>
+          </View>
+        ) : (
+          <View style={styles.textlogBody}>
+            <Text style={styles.textlogPrompt}>
+              Describe what you are eating — include ingredients, cooking method, and approximate portion if known.
+            </Text>
+            <TextInput
+              style={styles.textlogInput}
+              value={textDescription}
+              onChangeText={setTextDescription}
+              placeholder={'e.g. "Dal makhani with 2 rotis and a small bowl of rice"\nor "Tofu bhurji made with olive oil and bell peppers"'}
+              placeholderTextColor="#9CA3AF"
+              multiline
+              textAlignVertical="top"
+              maxLength={400}
+              autoFocus
+            />
+            <Text style={styles.textlogCount}>{textDescription.length}/400</Text>
+            <TouchableOpacity
+              style={[styles.analyzeBtn, { marginTop: 12, borderRadius: 16 }, (!textDescription.trim()) && { backgroundColor: '#C7C7CC' }]}
+              onPress={analyzeText}
+              disabled={!textDescription.trim()}
+            >
+              <Text style={styles.analyzeBtnText}>Analyze Meal</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
     );
   }
@@ -384,7 +466,21 @@ export default function CameraScreen({ navigation }) {
     return (
       <View style={[styles.full, { paddingBottom: kbPad }]}>
         <ScrollView ref={scrollRef} style={styles.container} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-          <Image source={{ uri: imageUri }} style={styles.resultImage} resizeMode="cover" />
+          {imageUri ? (
+            <Image source={{ uri: imageUri }} style={styles.resultImage} resizeMode="cover" />
+          ) : (
+            <View style={styles.textResultBanner}>
+              <View style={styles.textResultIconBox}>
+                <View style={styles.textResultIconLine1} />
+                <View style={styles.textResultIconLine2} />
+                <View style={styles.textResultIconLine3} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.textResultBannerTitle}>Meal Description</Text>
+                <Text style={styles.textResultBannerDesc} numberOfLines={3}>{textDescription}</Text>
+              </View>
+            </View>
+          )}
 
           <View style={styles.resultContent}>
             {scoreComparison && (
@@ -615,6 +711,21 @@ export default function CameraScreen({ navigation }) {
           </View>
           <Text style={styles.chevron}>›</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity style={[styles.menuBtn, styles.menuBtnSecondary]} onPress={() => setMode('textlog')} activeOpacity={0.75}>
+          <View style={[styles.menuBtnIconBox, { backgroundColor: '#FF8C0012' }]}>
+            <View style={styles.textlogMenuIcon}>
+              <View style={[styles.textlogMenuLine, { width: 18 }]} />
+              <View style={[styles.textlogMenuLine, { width: 14 }]} />
+              <View style={[styles.textlogMenuLine, { width: 10 }]} />
+            </View>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.menuBtnTitle}>Describe Your Meal</Text>
+            <Text style={styles.menuBtnDesc}>Type what you ate — no photo needed</Text>
+          </View>
+          <Text style={styles.chevron}>›</Text>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.scanTip}>
@@ -794,4 +905,32 @@ const styles = StyleSheet.create({
   scanTip: { backgroundColor: '#fff', borderRadius: 14, padding: 16, flexDirection: 'row', alignItems: 'flex-start', gap: 10, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 8, elevation: 1 },
   scanTipDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#6C63FF', marginTop: 4 },
   scanTipText: { fontSize: 13, color: '#8E8E93', lineHeight: 19, flex: 1 },
+
+  // Preview hint
+  previewBottom: { gap: 12 },
+  hintBox: { backgroundColor: '#ffffffF0', borderRadius: 18, padding: 16, gap: 8 },
+  hintLabel: { fontSize: 12, fontWeight: '700', color: '#6C63FF', textTransform: 'uppercase', letterSpacing: 0.5 },
+  hintInput: { backgroundColor: '#F2F2F7', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, fontSize: 14, color: '#1A1A2E' },
+
+  // Text log mode
+  textlogHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 60, paddingBottom: 16, backgroundColor: '#fff', borderBottomWidth: 0.5, borderBottomColor: '#E5E5EA' },
+  textlogTitle: { fontSize: 17, fontWeight: '700', color: '#1A1A2E' },
+  textlogLoading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 40 },
+  textlogBody: { flex: 1, padding: 20 },
+  textlogPrompt: { fontSize: 14, color: '#6B7280', lineHeight: 20, marginBottom: 16 },
+  textlogInput: { backgroundColor: '#fff', borderRadius: 16, padding: 16, fontSize: 15, color: '#1A1A2E', minHeight: 160, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 10, elevation: 2 },
+  textlogCount: { fontSize: 11, color: '#C7C7CC', textAlign: 'right', marginTop: 6 },
+
+  // Text-only result banner
+  textResultBanner: { flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: '#EEF0FF', padding: 20, minHeight: 100 },
+  textResultIconBox: { width: 44, height: 44, borderRadius: 12, backgroundColor: '#6C63FF22', alignItems: 'center', justifyContent: 'center', gap: 5 },
+  textResultIconLine1: { width: 22, height: 3, borderRadius: 2, backgroundColor: '#6C63FF' },
+  textResultIconLine2: { width: 16, height: 3, borderRadius: 2, backgroundColor: '#6C63FF' },
+  textResultIconLine3: { width: 10, height: 3, borderRadius: 2, backgroundColor: '#6C63FF' },
+  textResultBannerTitle: { fontSize: 11, fontWeight: '700', color: '#6C63FF', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 4 },
+  textResultBannerDesc: { fontSize: 14, color: '#3730A3', lineHeight: 20 },
+
+  // Text log menu icon
+  textlogMenuIcon: { gap: 4, alignItems: 'flex-start', justifyContent: 'center' },
+  textlogMenuLine: { height: 3, borderRadius: 2, backgroundColor: '#FF8C00' },
 });

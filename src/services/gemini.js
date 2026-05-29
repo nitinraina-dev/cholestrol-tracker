@@ -108,11 +108,11 @@ function buildSuggestionsPrompt(report, dietPreference = 'omnivore', language = 
 
   return `You are a clinical dietitian and chef. ${reportContext} ${dietCtx}
 
-Suggest 6 specific, realistic Indian meals that are SAFE for this patient to eat today. Each meal must have riskScore 1-3.
+Suggest 4 specific, realistic Indian meals that are SAFE for this patient to eat today. Each meal must have riskScore 1-3.
 Vary the meal types — include a mix of ${focus} options and ${region} cuisine this time. Do NOT repeat meals from previous suggestions.
 For each meal provide:
-- Complete ingredients list with quantities (e.g. "1 cup moong dal", "2 tsp cumin seeds")
-- Step-by-step cooking instructions (4-6 clear steps)
+- Ingredients list with quantities (e.g. "1 cup moong dal", "2 tsp cumin seeds")
+- Cooking instructions (3-4 clear steps)
 - prepTime and cookTime in whole minutes
 - servings count (typically 2-4)
 - imageSearchQuery: a short English phrase (2-3 words) to find a food photo of this dish
@@ -298,17 +298,55 @@ async function callAI(parts, maxOutputTokens = 4096, schema = null, temperature 
 
 // ── Public exports ────────────────────────────────────────────────────────────
 
-export async function analyzeFoodImage(imageUri, report = null, dietPreference = 'omnivore', language = 'english') {
+export async function analyzeFoodImage(imageUri, report = null, dietPreference = 'omnivore', language = 'english', textHint = '') {
   const base64 = await new File(imageUri).base64();
+  const hintPart = textHint.trim()
+    ? `\nUSER NOTE: The user says this meal contains: "${textHint.trim()}". Use this to resolve any ambiguity in identifying the food (e.g. distinguish tofu from paneer, use exact item names the user provided).`
+    : '';
   const text = await callAI([
-    { text: buildFoodPrompt(report, dietPreference, language) },
+    { text: buildFoodPrompt(report, dietPreference, language) + hintPart },
     { inline_data: { mime_type: 'image/jpeg', data: base64 } },
-  ], 4096, FOOD_SCHEMA);
+  ], 1024, FOOD_SCHEMA);
+  return JSON.parse(text);
+}
+
+export async function analyzeTextMeal(description, report = null, dietPreference = 'omnivore', language = 'english') {
+  const reportContext = report
+    ? `PATIENT'S LATEST BLOOD REPORT (${new Date(report.date).toLocaleDateString('en-IN')}):
+- Total Cholesterol: ${report.totalCholesterol ?? 'N/A'} mg/dL
+- LDL: ${report.ldl ?? 'N/A'} mg/dL
+- HDL: ${report.hdl ?? 'N/A'} mg/dL
+- VLDL: ${report.vldl ?? 'N/A'} mg/dL
+- Triglycerides: ${report.triglycerides ?? 'N/A'} mg/dL
+Use these ACTUAL values to personalize the canEat verdict and personalizedAdvice.`
+    : `No blood report on file. Assume HIGH VLDL, HIGH LDL, HIGH TRIGLYCERIDES as a precaution.`;
+
+  const dietCtx = DIET_CONTEXT[dietPreference] || DIET_CONTEXT.omnivore;
+
+  const prompt = `You are a clinical dietitian assistant.
+${reportContext}
+${dietCtx}
+
+The user has described their meal in text. Analyze it for cholesterol and cardiovascular impact.
+
+MEAL DESCRIPTION: "${description}"
+
+Identify each food item mentioned, estimate realistic nutrient values for a typical serving of this meal. Apply the same risk rules:
+- HIGH riskLevel (riskScore 7-10): fried foods, red meat, full-fat dairy, butter, ghee, pastries, white rice/bread, sugary drinks, packaged snacks with trans fat or palm oil
+- MEDIUM riskLevel (riskScore 4-6): chicken with skin, eggs, refined carbs, excess vegetable oils
+- LOW riskLevel (riskScore 1-3): vegetables, fruits, legumes, whole grains, fish (if non-veg), nuts, olive oil
+
+canEat: YES=riskScore 1-3, IN MODERATION=4-6, AVOID=7-10 or worsens already-high values.
+All nutrient values in grams (cholesterol in mg). Use 0 for omega3 if not applicable.
+personalizedAdvice should reference actual blood values if available.
+${langInstruction(language)}`;
+
+  const text = await callAI([{ text: prompt }], 1024, FOOD_SCHEMA, 0.1);
   return JSON.parse(text);
 }
 
 export async function getMealSuggestions(report = null, dietPreference = 'omnivore', language = 'english') {
-  const text = await callAI([{ text: buildSuggestionsPrompt(report, dietPreference, language) }], 8192, SUGGESTIONS_SCHEMA, 0.9);
+  const text = await callAI([{ text: buildSuggestionsPrompt(report, dietPreference, language) }], 4096, SUGGESTIONS_SCHEMA, 0.9);
   return JSON.parse(text);
 }
 
@@ -322,7 +360,7 @@ export async function extractReportValues(fileUri, mimeType = 'image/jpeg') {
 }
 
 export async function recalculateMealScore(originalAnalysis, chatHistory, report = null, language = 'english') {
-  const historyText = chatHistory.map(m => `${m.role === 'user' ? 'User' : 'Dietitian'}: ${m.text}`).join('\n');
+  const historyText = chatHistory.slice(-6).map(m => `${m.role === 'user' ? 'User' : 'Dietitian'}: ${m.text}`).join('\n');
   const prompt = `You are a clinical dietitian. A meal was analyzed and the user provided additional context through conversation. Revise the analysis based on that context.
 
 ORIGINAL ANALYSIS:
@@ -376,8 +414,9 @@ ${langInstruction(language)}`;
 }
 
 export async function chatAboutMeal(userMessage, history = [], mealAnalysis, report = null, language = 'english') {
-  const historyText = history.length
-    ? history.map(m => `${m.role === 'user' ? 'User' : 'Dietitian'}: ${m.text}`).join('\n') + '\n'
+  const recentHistory = history.slice(-6);
+  const historyText = recentHistory.length
+    ? recentHistory.map(m => `${m.role === 'user' ? 'User' : 'Dietitian'}: ${m.text}`).join('\n') + '\n'
     : '';
 
   const prompt = `You are a clinical dietitian assistant. The user just scanned a meal.
