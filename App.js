@@ -3,7 +3,7 @@ import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { View, Text, Alert } from 'react-native';
+import { View, Text, Alert, Dimensions } from 'react-native';
 import * as Updates from 'expo-updates';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -38,6 +38,8 @@ const NAV_OPTS = {
   gestureEnabled: true,
 };
 
+const TAB_LABEL_WIDTH = Dimensions.get('window').width / 5;
+
 // ── Tab icon components (no emoji) ─────────────────────────────────────────
 
 function HomeIcon({ focused }) {
@@ -55,7 +57,7 @@ function HomeIcon({ focused }) {
           <View style={{ width: 4, height: 6, backgroundColor: focused ? '#EEF0FF' : '#E5E5EA', borderRadius: 1, alignSelf: 'center', marginTop: 4 }} />
         </View>
       </View>
-      <Text style={{ fontSize: 8, fontWeight: '600', color: c }} numberOfLines={1} adjustsFontSizeToFit>Today</Text>
+      <Text style={{ fontSize: 8, fontWeight: '600', color: c, width: TAB_LABEL_WIDTH, textAlign: 'center' }} numberOfLines={1} adjustsFontSizeToFit allowFontScaling={false}>Today</Text>
     </View>
   );
 }
@@ -75,7 +77,7 @@ function ScanIcon({ focused }) {
           <View style={{ width: 5.5, height: 5.5, borderRadius: 2.75, borderWidth: 1.5, borderColor: '#fff' }} />
         </View>
       </View>
-      <Text style={{ fontSize: 8, fontWeight: '700', color: '#6C63FF' }} numberOfLines={1} adjustsFontSizeToFit>Scan</Text>
+      <Text style={{ fontSize: 8, fontWeight: '700', color: '#6C63FF', width: TAB_LABEL_WIDTH, textAlign: 'center' }} numberOfLines={1} adjustsFontSizeToFit allowFontScaling={false}>Scan</Text>
     </View>
   );
 }
@@ -89,7 +91,7 @@ function HistoryIcon({ focused }) {
           <View key={i} style={{ width: w, height: 2, backgroundColor: c, borderRadius: 1 }} />
         ))}
       </View>
-      <Text style={{ fontSize: 8, fontWeight: '600', color: c }} numberOfLines={1} adjustsFontSizeToFit>History</Text>
+      <Text style={{ fontSize: 8, fontWeight: '600', color: c, width: TAB_LABEL_WIDTH, textAlign: 'center' }} numberOfLines={1} adjustsFontSizeToFit allowFontScaling={false}>Logs</Text>
     </View>
   );
 }
@@ -104,7 +106,7 @@ function InsightsIcon({ focused }) {
           <View key={i} style={{ width: 3.5, height: h, backgroundColor: i === 3 && focused ? '#6C63FF' : c, borderRadius: 1, opacity: focused ? 1 : 0.9 }} />
         ))}
       </View>
-      <Text style={{ fontSize: 8, fontWeight: '600', color: c }} numberOfLines={1} adjustsFontSizeToFit>Insights</Text>
+      <Text style={{ fontSize: 8, fontWeight: '600', color: c, width: TAB_LABEL_WIDTH, textAlign: 'center' }} numberOfLines={1} adjustsFontSizeToFit allowFontScaling={false}>Insights</Text>
     </View>
   );
 }
@@ -118,7 +120,7 @@ function MoreIcon({ focused }) {
           <View key={i} style={{ width: 4 * scale, height: 4 * scale, borderRadius: 2 * scale, backgroundColor: c }} />
         ))}
       </View>
-      <Text style={{ fontSize: 8, fontWeight: '600', color: c }} numberOfLines={1} adjustsFontSizeToFit>More</Text>
+      <Text style={{ fontSize: 8, fontWeight: '600', color: c, width: TAB_LABEL_WIDTH, textAlign: 'center' }} numberOfLines={1} adjustsFontSizeToFit allowFontScaling={false}>More</Text>
     </View>
   );
 }
