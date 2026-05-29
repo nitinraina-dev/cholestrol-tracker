@@ -303,6 +303,100 @@ function CholesterolStatusCard({ reports }) {
   );
 }
 
+function LabTrendChart({ reports }) {
+  if (reports.length < 2) return null;
+  const sorted = [...reports]
+    .sort((a, b) => (parseReportDate(a.date) || 0) - (parseReportDate(b.date) || 0))
+    .slice(-8);
+
+  const METRICS = [
+    { key: 'ldl',           label: 'LDL',  color: '#FF4757' },
+    { key: 'hdl',           label: 'HDL',  color: '#00C48C' },
+    { key: 'triglycerides', label: 'TG',   color: '#3B82F6' },
+  ];
+
+  const allVals = sorted.flatMap(r => METRICS.map(m => r[m.key]).filter(v => v != null));
+  if (!allVals.length) return null;
+  const minVal = Math.min(...allVals, 30);
+  const maxVal = Math.max(...allVals, 200);
+  const range = maxVal - minVal || 100;
+  const CHART_H = 90;
+
+  function toPct(val) {
+    return 1 - (val - minVal) / range;
+  }
+
+  const W_PCT = 100 / (sorted.length - 1);
+
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>Lab Report Trends</Text>
+      <Text style={styles.cardSub}>LDL · HDL · TG over time (mg/dL)</Text>
+
+      <View style={{ flexDirection: 'row', gap: 12, marginBottom: 10 }}>
+        {METRICS.map(m => (
+          <View key={m.key} style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+            <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: m.color }} />
+            <Text style={{ fontSize: 11, color: m.color, fontWeight: '700' }}>{m.label}</Text>
+          </View>
+        ))}
+      </View>
+
+      <View style={{ height: CHART_H + 30, position: 'relative', marginHorizontal: 4 }}>
+        {[100, 150, 200].map(line => {
+          if (line < minVal || line > maxVal) return null;
+          const top = toPct(line) * CHART_H;
+          return (
+            <View key={line} style={{ position: 'absolute', top, left: 0, right: 0, height: 1, backgroundColor: '#E5E5EA' }}>
+              <Text style={{ position: 'absolute', right: 0, top: -8, fontSize: 9, color: '#C5C6D0' }}>{line}</Text>
+            </View>
+          );
+        })}
+
+        {sorted.map((r, i) => {
+          const xPct = i === 0 ? 0 : (i / (sorted.length - 1)) * 100;
+          const d = parseReportDate(r.date);
+          const label = d ? d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : r.date?.slice(0, 5) || '';
+          return (
+            <React.Fragment key={r.id}>
+              {METRICS.map(m => {
+                if (r[m.key] == null) return null;
+                const top = toPct(r[m.key]) * CHART_H - 4;
+                return (
+                  <View key={m.key} style={{ position: 'absolute', top: Math.max(0, top), left: `${xPct}%`, marginLeft: -4 }}>
+                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: m.color }} />
+                  </View>
+                );
+              })}
+              <Text style={{ position: 'absolute', top: CHART_H + 6, left: `${xPct}%`, fontSize: 9, color: '#9CA3AF', transform: [{ translateX: -14 }] }}>
+                {label}
+              </Text>
+            </React.Fragment>
+          );
+        })}
+      </View>
+
+      <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+        {METRICS.map(m => {
+          const vals = sorted.map(r => r[m.key]).filter(v => v != null);
+          if (!vals.length) return null;
+          const latest = vals[vals.length - 1];
+          const first = vals[0];
+          const diff = Math.round(latest - first);
+          const improved = (m.key === 'hdl') ? diff > 0 : diff < 0;
+          const color = diff === 0 ? '#9CA3AF' : improved ? '#00C48C' : '#FF4757';
+          return (
+            <View key={m.key} style={{ flex: 1, backgroundColor: color + '14', borderRadius: 10, padding: 8, alignItems: 'center' }}>
+              <Text style={{ fontSize: 11, color, fontWeight: '800' }}>{m.label}: {latest}</Text>
+              <Text style={{ fontSize: 10, color, marginTop: 2 }}>{diff > 0 ? '+' : ''}{diff} from first</Text>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
 function ReportTrendCard({ reports }) {
   if (reports.length < 2) return null;
   const sorted = [...reports].sort((a, b) => (parseReportDate(a.date) || 0) - (parseReportDate(b.date) || 0));
@@ -423,6 +517,9 @@ export default function InsightsScreen() {
           })}
         </View>
       </View>
+
+      {/* Lab Report Trend Chart */}
+      <LabTrendChart reports={reports} />
 
       {/* Report Trend */}
       <ReportTrendCard reports={reports} />

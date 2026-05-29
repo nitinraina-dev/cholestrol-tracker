@@ -341,6 +341,40 @@ ${langInstruction(language)}`;
   return JSON.parse(text);
 }
 
+export async function analyzeProductText(productName, brand, servingSize, nutriments, report = null, dietPreference = 'omnivore', language = 'english') {
+  const reportContext = report
+    ? `PATIENT'S BLOOD REPORT: LDL ${report.ldl ?? 'N/A'}, HDL ${report.hdl ?? 'N/A'}, VLDL ${report.vldl ?? 'N/A'}, TG ${report.triglycerides ?? 'N/A'} mg/dL.`
+    : `No blood report. Assume HIGH LDL, HIGH VLDL, HIGH TRIGLYCERIDES.`;
+  const dietCtx = DIET_CONTEXT[dietPreference] || DIET_CONTEXT.omnivore;
+
+  const n = nutriments || {};
+  const prompt = `You are a clinical dietitian assistant.
+${reportContext}
+${dietCtx}
+
+Analyze this packaged food product:
+Product: ${productName}${brand ? ` by ${brand}` : ''}
+Serving size: ${servingSize || 'as labelled'}
+Nutrition per serving:
+- Saturated fat: ${n.saturatedFat ?? n['saturated-fat_serving'] ?? 'N/A'} g
+- Trans fat: ${n.transFat ?? n['trans-fat_serving'] ?? 0} g
+- Cholesterol: ${n.cholesterol ?? n['cholesterol_serving'] ?? 0} mg
+- Total carbs: ${n.totalCarbs ?? n['carbohydrates_serving'] ?? 'N/A'} g
+- Sugar: ${n.sugar ?? n['sugars_serving'] ?? 'N/A'} g
+- Fiber: ${n.fiber ?? n['fiber_serving'] ?? n['fibers_serving'] ?? 0} g
+- Protein: ${n.protein ?? n['proteins_serving'] ?? 'N/A'} g
+- Omega-3: ${n.omega3 ?? 0} g
+
+Apply the same risk rules:
+HIGH (7-10): trans fat, palm oil products, high sugar, fried, vanaspati
+MEDIUM (4-6): moderate saturated fat, refined carbs
+LOW (1-3): high fiber, low sat fat, plant-based
+${langInstruction(language)}`;
+
+  const text = await callAI([{ text: prompt }], 2048, FOOD_SCHEMA, 0.1);
+  return JSON.parse(text);
+}
+
 export async function chatAboutMeal(userMessage, history = [], mealAnalysis, report = null, language = 'english') {
   const historyText = history.length
     ? history.map(m => `${m.role === 'user' ? 'User' : 'Dietitian'}: ${m.text}`).join('\n') + '\n'

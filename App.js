@@ -22,6 +22,12 @@ import ToolsScreen       from './src/screens/ToolsScreen';
 import OnboardingScreen    from './src/screens/OnboardingScreen';
 import AddReportScreen     from './src/screens/AddReportScreen';
 import AddDoctorNoteScreen from './src/screens/AddDoctorNoteScreen';
+import MedicationScreen    from './src/screens/MedicationScreen';
+import AddMedicationScreen from './src/screens/AddMedicationScreen';
+import BloodPressureScreen from './src/screens/BloodPressureScreen';
+import ExerciseScreen      from './src/screens/ExerciseScreen';
+import CustomFoodScreen    from './src/screens/CustomFoodScreen';
+import ProfilesScreen      from './src/screens/ProfilesScreen';
 import { isOnboardingComplete } from './src/services/onboardingStorage';
 import { TourProvider, useTour } from './src/contexts/TourContext';
 import TourOverlay from './src/components/TourOverlay';
@@ -155,8 +161,14 @@ function MoreStack() {
       <Stack.Screen name="DoctorNotes"    component={DoctorNotesScreen}   options={{ title: 'Doctor Notes' }} />
       <Stack.Screen name="Settings"       component={SettingsScreen}      options={{ title: 'Settings' }} />
       <Stack.Screen name="Tools"          component={ToolsScreen}         options={{ title: 'Tools & Calculators' }} />
-      <Stack.Screen name="AddReport"      component={AddReportScreen}     options={{ title: 'Add Report', ...NAV_OPTS }} />
-      <Stack.Screen name="AddDoctorNote"  component={AddDoctorNoteScreen} options={{ title: 'New Note', ...NAV_OPTS }} />
+      <Stack.Screen name="AddReport"       component={AddReportScreen}     options={{ title: 'Add Report', ...NAV_OPTS }} />
+      <Stack.Screen name="AddDoctorNote"   component={AddDoctorNoteScreen} options={{ title: 'New Note', ...NAV_OPTS }} />
+      <Stack.Screen name="Medications"     component={MedicationScreen}    options={{ title: 'Medications' }} />
+      <Stack.Screen name="AddMedication"   component={AddMedicationScreen} options={{ title: 'Add Medication' }} />
+      <Stack.Screen name="BloodPressure"   component={BloodPressureScreen} options={{ title: 'Blood Pressure Log' }} />
+      <Stack.Screen name="Exercise"        component={ExerciseScreen}      options={{ title: 'Exercise Log' }} />
+      <Stack.Screen name="CustomFoods"     component={CustomFoodScreen}    options={{ title: 'Custom Food Library' }} />
+      <Stack.Screen name="Profiles"        component={ProfilesScreen}      options={{ title: 'Family Profiles' }} />
     </Stack.Navigator>
   );
 }

@@ -4,12 +4,17 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LogoFull } from '../components/Logo';
 
 const MENU_ITEMS = [
-  { abbrev: 'RX', color: '#6C63FF', title: 'Blood Reports',        desc: 'Upload and track your cholesterol reports', screen: 'Reports' },
-  { abbrev: 'AI', color: '#00C48C', title: 'Meal Suggestions',     desc: 'AI-suggested safe meals for you',           screen: 'Suggestions' },
-  { abbrev: 'OK', color: '#30D158', title: 'Safe Foods',            desc: 'Foods you scanned with low risk',          screen: 'SafeFoods' },
-  { abbrev: 'TX', color: '#FF8C00', title: 'Tools & Calculators',  desc: 'CVD risk, LDL formula, test reminder',      screen: 'Tools' },
-  { abbrev: 'DR', color: '#3B82F6', title: 'Doctor Notes',          desc: 'Notes from your appointments',             screen: 'DoctorNotes' },
-  { abbrev: 'SG', color: '#8E8E93', title: 'Settings',              desc: 'Diet preference, water goal and more',     screen: 'Settings' },
+  { abbrev: 'RX', color: '#6C63FF', title: 'Blood Reports',        desc: 'Upload and track your cholesterol reports',    screen: 'Reports' },
+  { abbrev: 'AI', color: '#00C48C', title: 'Meal Suggestions',     desc: 'AI-suggested safe meals for you',              screen: 'Suggestions' },
+  { abbrev: 'OK', color: '#30D158', title: 'Safe Foods',            desc: 'Foods you scanned with low risk',             screen: 'SafeFoods' },
+  { abbrev: 'CF', color: '#8B5CF6', title: 'Custom Food Library',  desc: 'Save your frequently eaten meals',             screen: 'CustomFoods' },
+  { abbrev: 'Rx', color: '#FF8C00', title: 'Medications',          desc: 'Track your cholesterol medications daily',     screen: 'Medications' },
+  { abbrev: 'BP', color: '#FF4757', title: 'Blood Pressure Log',   desc: 'Monitor BP alongside your cholesterol',        screen: 'BloodPressure' },
+  { abbrev: 'EX', color: '#00C48C', title: 'Exercise Log',         desc: 'Track workouts · 150 min/week goal',           screen: 'Exercise' },
+  { abbrev: 'TX', color: '#FF8C00', title: 'Tools & Calculators',  desc: 'CVD risk, LDL formula, test reminder',         screen: 'Tools' },
+  { abbrev: 'DR', color: '#3B82F6', title: 'Doctor Notes',          desc: 'Notes from your appointments',                screen: 'DoctorNotes' },
+  { abbrev: 'PR', color: '#6C63FF', title: 'Family Profiles',      desc: 'Track cholesterol for your whole family',      screen: 'Profiles' },
+  { abbrev: 'SG', color: '#8E8E93', title: 'Settings',              desc: 'Diet, language, water goal & reminders',      screen: 'Settings' },
 ];
 
 export default function MoreScreen({ navigation }) {
@@ -49,7 +54,7 @@ export default function MoreScreen({ navigation }) {
       </View>
 
       <View style={styles.versionBox}>
-        <Text style={styles.versionText}>Cholesterol Tracker v3.0</Text>
+        <Text style={styles.versionText}>Cholesterol Tracker v4.0</Text>
       </View>
     </ScrollView>
   );

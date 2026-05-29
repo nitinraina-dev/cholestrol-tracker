@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { analyzeFoodImage, chatAboutMeal, recalculateMealScore, RateLimitError } from '../services/gemini';
+import { analyzeFoodImage, analyzeProductText, chatAboutMeal, recalculateMealScore, RateLimitError } from '../services/gemini';
 import { saveMeal, getMeals } from '../services/storage';
 import { getLatestReport, getReports } from '../services/reportStorage';
 import { getDietPreference, getLanguagePreference } from '../services/settingsStorage';
@@ -66,6 +66,8 @@ export default function CameraScreen({ navigation }) {
   const [originalResult, setOriginalResult] = useState(null);
   const [scoreComparison, setScoreComparison] = useState(null);
   const [showNutrientGuide, setShowNutrientGuide] = useState(false);
+  const [barcodeScanned, setBarcodeScanned] = useState(false);
+  const [barcodeLoading, setBarcodeLoading] = useState(false);
   const cameraRef = useRef(null);
   const menuOptionsRef = useRef(null);
   const analyzeRef = useRef(null);
@@ -213,7 +215,101 @@ export default function CameraScreen({ navigation }) {
     navigation.navigate('HomeTab');
   };
 
-  const reset = () => { setMode('menu'); setImageUri(null); setResult(null); setOriginalResult(null); setScoreComparison(null); setChatMessages([]); setChatInput(''); setShowRecalculate(false); };
+  const reset = () => { setMode('menu'); setImageUri(null); setResult(null); setOriginalResult(null); setScoreComparison(null); setChatMessages([]); setChatInput(''); setShowRecalculate(false); setBarcodeScanned(false); setBarcodeLoading(false); };
+
+  const openBarcodeScanner = async () => {
+    if (!permission?.granted) {
+      const { granted } = await requestPermission();
+      if (!granted) { Alert.alert('Camera permission required'); return; }
+    }
+    setBarcodeScanned(false);
+    setMode('barcode');
+  };
+
+  const handleBarcodeScanned = async ({ data }) => {
+    if (barcodeScanned || barcodeLoading) return;
+    setBarcodeScanned(true);
+    setBarcodeLoading(true);
+    try {
+      const resp = await fetch(`https://world.openfoodfacts.org/api/v2/product/${data}.json`);
+      const json = await resp.json();
+      if (json.status !== 1 || !json.product) {
+        Alert.alert('Product not found', 'This barcode was not found in the food database. Try another product.', [
+          { text: 'Try Again', onPress: () => { setBarcodeScanned(false); setBarcodeLoading(false); } },
+          { text: 'Cancel', onPress: reset },
+        ]);
+        return;
+      }
+      const p = json.product;
+      const n = p.nutriments || {};
+      const nutriments = {
+        saturatedFat: n['saturated-fat_serving'] ?? n['saturated-fat_100g'] ?? 0,
+        transFat:     n['trans-fat_serving'] ?? n['trans-fat_100g'] ?? 0,
+        cholesterol:  n['cholesterol_serving'] ?? n['cholesterol_100g'] ?? 0,
+        totalCarbs:   n['carbohydrates_serving'] ?? n['carbohydrates_100g'] ?? 0,
+        sugar:        n['sugars_serving'] ?? n['sugars_100g'] ?? 0,
+        fiber:        n['fiber_serving'] ?? n['fibers_serving'] ?? n['fiber_100g'] ?? 0,
+        omega3:       0,
+        protein:      n['proteins_serving'] ?? n['proteins_100g'] ?? 0,
+      };
+      const [report, diet, lang] = await Promise.all([getLatestReport(), getDietPreference(), getLanguagePreference()]);
+      setLatestReport(report);
+      const analysis = await analyzeProductText(
+        p.product_name || p.product_name_en || 'Unknown Product',
+        p.brands || '',
+        p.serving_size || '',
+        nutriments,
+        report,
+        diet,
+        lang
+      );
+      setResult(analysis);
+      setOriginalResult(analysis);
+      setChatMessages([]);
+      setMode('result');
+    } catch (e) {
+      Alert.alert('Error', 'Could not fetch product info. Check your internet connection.', [
+        { text: 'Try Again', onPress: () => { setBarcodeScanned(false); setBarcodeLoading(false); } },
+        { text: 'Cancel', onPress: reset },
+      ]);
+    } finally {
+      setBarcodeLoading(false);
+    }
+  };
+
+  // ── Barcode scanner view ───────────────────────────────────────────────────
+  if (mode === 'barcode') {
+    return (
+      <View style={styles.full}>
+        <CameraView
+          style={styles.full}
+          facing="back"
+          barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'upc_a', 'upc_e', 'qr'] }}
+          onBarcodeScanned={barcodeScanned ? undefined : handleBarcodeScanned}
+        >
+          <View style={styles.cameraOverlay}>
+            <View style={styles.cameraTopBar}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={reset}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={[styles.cameraFrame, { borderColor: barcodeLoading ? '#FF9F0A' : '#6C63FF' }]} />
+            <Text style={styles.cameraHint}>
+              {barcodeLoading ? 'Looking up product...' : 'Point at barcode on packaging'}
+            </Text>
+            {barcodeLoading && (
+              <View style={styles.loadingBox}>
+                <ActivityIndicator size="large" color="#6C63FF" />
+                <Text style={styles.loadingTitle}>Fetching product info</Text>
+                <Text style={styles.loadingHint}>Checking Open Food Facts database...</Text>
+              </View>
+            )}
+            {!barcodeLoading && <View style={{ width: 60 }} />}
+          </View>
+        </CameraView>
+      </View>
+    );
+  }
 
   // ── Camera view ────────────────────────────────────────────────────────────
   if (mode === 'camera') {
@@ -504,6 +600,21 @@ export default function CameraScreen({ navigation }) {
           </View>
           <Text style={styles.chevron}>›</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity style={[styles.menuBtn, styles.menuBtnSecondary]} onPress={openBarcodeScanner} activeOpacity={0.75}>
+          <View style={[styles.menuBtnIconBox, { backgroundColor: '#00C48C12' }]}>
+            <View style={styles.barcodeIconBox}>
+              {[0, 1, 2, 3, 4].map(i => (
+                <View key={i} style={[styles.barcodeBar, { width: i % 2 === 0 ? 2 : 3 }]} />
+              ))}
+            </View>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.menuBtnTitle}>Scan Barcode</Text>
+            <Text style={styles.menuBtnDesc}>Scan packaged food for instant nutrition lookup</Text>
+          </View>
+          <Text style={styles.chevron}>›</Text>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.scanTip}>
@@ -672,6 +783,8 @@ const styles = StyleSheet.create({
   cameraIconLens: { width: 10, height: 10, borderRadius: 5, borderWidth: 2, borderColor: '#fff' },
   galleryIconOuter: { width: 26, height: 22, borderRadius: 4, borderWidth: 2, borderColor: '#6C63FF', alignItems: 'flex-end', justifyContent: 'flex-end', padding: 2 },
   galleryIconInner: { width: 12, height: 10, borderRadius: 2, backgroundColor: '#6C63FF', opacity: 0.5 },
+  barcodeIconBox: { flexDirection: 'row', gap: 2, alignItems: 'center', height: 20 },
+  barcodeBar: { height: '100%', backgroundColor: '#00C48C', borderRadius: 1 },
   menuBtnTitle: { fontSize: 16, fontWeight: '700', color: '#000' },
   menuBtnTitleWhite: { fontSize: 16, fontWeight: '700', color: '#fff' },
   menuBtnDesc: { fontSize: 13, color: '#8E8E93', marginTop: 2 },

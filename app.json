@@ -38,6 +38,7 @@
           "iCloudContainerEnvironment": "Production"
         }
       ],
+      ["expo-notifications", { "icon": "./assets/icon.png", "color": "#6C63FF" }],
       "react-native-edge-to-edge",
       [
         "expo-build-properties",

@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Alert } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Alert, Switch, Platform } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   getDietPreference, setDietPreference, getWaterGoal, setWaterGoal, DIET_OPTIONS,
@@ -7,18 +7,26 @@ import {
 } from '../services/settingsStorage';
 import { resetTour } from '../services/tourStorage';
 import { useTour } from '../contexts/TourContext';
+import {
+  getNotificationPrefs, saveNotificationPrefs,
+  requestNotificationPermission,
+  scheduleWaterReminders, cancelWaterReminders,
+  scheduleMealReminders, cancelMealReminders,
+} from '../services/notificationService';
 
 export default function SettingsScreen() {
   const [diet, setDiet] = useState('omnivore');
   const [waterGoal, setWaterGoalState] = useState('2.5');
   const [language, setLanguageState] = useState('english');
+  const [notifPrefs, setNotifPrefs] = useState({ waterReminders: false, waterInterval: 2, mealReminders: false, mealTimes: ['08:00', '13:00', '19:30'] });
   const { startTour } = useTour();
 
   const load = useCallback(async () => {
-    const [d, w, l] = await Promise.all([getDietPreference(), getWaterGoal(), getLanguagePreference()]);
+    const [d, w, l, np] = await Promise.all([getDietPreference(), getWaterGoal(), getLanguagePreference(), getNotificationPrefs()]);
     setDiet(d);
     setWaterGoalState(w.toString());
     setLanguageState(l);
+    setNotifPrefs(np);
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
@@ -31,6 +39,26 @@ export default function SettingsScreen() {
   const handleLanguageChange = async (key) => {
     setLanguageState(key);
     await setLanguagePreference(key);
+  };
+
+  const handleWaterToggle = async (enabled) => {
+    const granted = enabled ? await requestNotificationPermission() : true;
+    if (enabled && !granted) { Alert.alert('Permission denied', 'Enable notifications in your device settings to use reminders.'); return; }
+    const updated = { ...notifPrefs, waterReminders: enabled };
+    setNotifPrefs(updated);
+    await saveNotificationPrefs(updated);
+    if (enabled) await scheduleWaterReminders(updated.waterInterval);
+    else await cancelWaterReminders();
+  };
+
+  const handleMealToggle = async (enabled) => {
+    const granted = enabled ? await requestNotificationPermission() : true;
+    if (enabled && !granted) { Alert.alert('Permission denied', 'Enable notifications in your device settings to use reminders.'); return; }
+    const updated = { ...notifPrefs, mealReminders: enabled };
+    setNotifPrefs(updated);
+    await saveNotificationPrefs(updated);
+    if (enabled) await scheduleMealReminders(updated.mealTimes);
+    else await cancelMealReminders();
   };
 
   const handleWaterGoalSave = async () => {
@@ -118,6 +146,59 @@ export default function SettingsScreen() {
         </View>
       </View>
 
+      {/* Notifications */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Reminders</Text>
+        <Text style={styles.sectionSub}>Get nudges to stay on track with your cholesterol goals</Text>
+
+        <View style={styles.notifRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.notifLabel}>Water Reminders</Text>
+            <Text style={styles.notifDesc}>Every {notifPrefs.waterInterval}h from 8 AM to 10 PM</Text>
+          </View>
+          <Switch
+            value={notifPrefs.waterReminders}
+            onValueChange={handleWaterToggle}
+            trackColor={{ false: '#E5E5EA', true: '#6C63FF' }}
+            thumbColor="#fff"
+          />
+        </View>
+        {notifPrefs.waterReminders && (
+          <View style={styles.intervalRow}>
+            <Text style={styles.intervalLabel}>Interval:</Text>
+            {[1, 2, 3, 4].map(h => (
+              <TouchableOpacity
+                key={h}
+                style={[styles.intervalChip, notifPrefs.waterInterval === h && styles.intervalChipActive]}
+                onPress={async () => {
+                  const updated = { ...notifPrefs, waterInterval: h };
+                  setNotifPrefs(updated);
+                  await saveNotificationPrefs(updated);
+                  await scheduleWaterReminders(h);
+                }}
+              >
+                <Text style={[styles.intervalChipText, notifPrefs.waterInterval === h && styles.intervalChipTextActive]}>
+                  {h}h
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
+        <View style={[styles.notifRow, { marginTop: 12 }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.notifLabel}>Meal Log Reminders</Text>
+            <Text style={styles.notifDesc}>At {notifPrefs.mealTimes?.join(', ')} daily</Text>
+          </View>
+          <Switch
+            value={notifPrefs.mealReminders}
+            onValueChange={handleMealToggle}
+            trackColor={{ false: '#E5E5EA', true: '#6C63FF' }}
+            thumbColor="#fff"
+          />
+        </View>
+      </View>
+
       {/* App Tour */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>App Tour</Text>
@@ -194,6 +275,16 @@ const styles = StyleSheet.create({
   waterPresets: { flexDirection: 'row', gap: 10 },
   preset: { flex: 1, backgroundColor: '#EEF0FF', padding: 10, borderRadius: 12, alignItems: 'center' },
   presetText: { fontSize: 13, color: '#6C63FF', fontWeight: '700' },
+
+  notifRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  notifLabel: { fontSize: 15, fontWeight: '700', color: '#2D3748' },
+  notifDesc: { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
+  intervalRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
+  intervalLabel: { fontSize: 13, color: '#9CA3AF', fontWeight: '600' },
+  intervalChip: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 10, backgroundColor: '#F2F2F7', borderWidth: 1.5, borderColor: 'transparent' },
+  intervalChipActive: { backgroundColor: '#EEF0FF', borderColor: '#6C63FF' },
+  intervalChipText: { fontSize: 13, fontWeight: '700', color: '#9CA3AF' },
+  intervalChipTextActive: { color: '#6C63FF' },
 
   tourBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 14,
