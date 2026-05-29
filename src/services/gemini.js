@@ -356,11 +356,11 @@ ${mealAnalysis.warnings?.length ? '- Warnings: ' + mealAnalysis.warnings.join(';
 ${mealAnalysis.benefits?.length ? '- Benefits: ' + mealAnalysis.benefits.join('; ') : ''}
 ${report ? `- Patient blood report: LDL ${report.ldl ?? 'N/A'}, HDL ${report.hdl ?? 'N/A'}, VLDL ${report.vldl ?? 'N/A'}, TG ${report.triglycerides ?? 'N/A'} mg/dL` : ''}
 
-Answer the user's question about this meal concisely (2-4 sentences max). Focus on cholesterol and nutrition impact.
+Answer the user's question about this meal in 3-5 sentences. Focus on cholesterol and nutrition impact. Do not cut your response short — always complete your thought.
 ${langInstruction(language)}
 
 ${historyText}User: ${userMessage}
 Dietitian:`;
 
-  return (await callAI([{ text: prompt }], 512, null, 0.7)).trim();
+  return (await callAI([{ text: prompt }], 2048, null, 0.7)).trim();
 }

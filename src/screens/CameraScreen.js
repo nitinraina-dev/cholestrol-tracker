@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Image,
   ActivityIndicator, Alert, ScrollView, BackHandler,
-  TextInput, KeyboardAvoidingView, Platform,
+  TextInput, Keyboard, Platform,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -13,7 +13,18 @@ import { getDietPreference, getLanguagePreference } from '../services/settingsSt
 import { refreshBadges } from '../services/streakStorage';
 import RiskBadge from '../components/RiskBadge';
 import NutrientRow from '../components/NutrientRow';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTour } from '../contexts/TourContext';
+
+const NUTRIENT_GUIDE = [
+  { key: 'saturatedFat', label: 'Saturated Fat',  limit: '<20g/day',   impact: 'bad',     desc: 'Found in butter, red meat and full-fat dairy. Directly raises LDL ("bad") cholesterol. The most common dietary driver of high LDL.' },
+  { key: 'transFat',     label: 'Trans Fat',       limit: '<2g/day',    impact: 'bad',     desc: 'Found in partially hydrogenated oils, vanaspati and packaged snacks. The worst fat for your heart — raises LDL and lowers HDL ("good") cholesterol at the same time.' },
+  { key: 'cholesterol',  label: 'Cholesterol',     limit: '<200mg/day', impact: 'bad',     desc: 'Dietary cholesterol from egg yolks, organ meat and shellfish. Raises blood cholesterol especially when LDL or VLDL is already high.' },
+  { key: 'sugar',        label: 'Sugar',            limit: '<25g/day',   impact: 'bad',     desc: 'Excess sugar is converted to triglycerides by the liver. High triglycerides are a major heart disease risk, separate from LDL.' },
+  { key: 'fiber',        label: 'Fiber',            limit: '>25g/day',   impact: 'good',    desc: 'Soluble fiber (oats, dal, fruits) binds bile acid and removes LDL from the bloodstream. One of the most effective dietary ways to lower LDL.' },
+  { key: 'omega3',       label: 'Omega-3',          limit: '>2g/day',    impact: 'good',    desc: 'Found in fish, flaxseed and walnuts. Reduces triglycerides, lowers inflammation and slightly raises HDL. Does not raise LDL.' },
+  { key: 'protein',      label: 'Protein',          limit: '>50g/day',   impact: 'neutral', desc: 'Does not directly affect cholesterol. Keeps you full longer, reducing snacking on unhealthy foods, and preserves muscle mass.' },
+];
 
 const CAN_EAT_CONFIG = {
   YES:             { color: '#00C48C', bg: '#E6FBF5', border: '#00C48C', label: 'Safe to eat',       sub: 'Good choice for your cholesterol' },
@@ -38,6 +49,7 @@ function FlashIcon({ active }) {
 }
 
 export default function CameraScreen({ navigation }) {
+  const { bottom: insetBottom } = useSafeAreaInsets();
   const [permission, requestPermission] = useCameraPermissions();
   const [mode, setMode] = useState('menu');
   const [imageUri, setImageUri] = useState(null);
@@ -51,11 +63,15 @@ export default function CameraScreen({ navigation }) {
   const [chatLoading, setChatLoading] = useState(false);
   const [showRecalculate, setShowRecalculate] = useState(false);
   const [recalculating, setRecalculating] = useState(false);
+  const [originalResult, setOriginalResult] = useState(null);
+  const [scoreComparison, setScoreComparison] = useState(null);
+  const [showNutrientGuide, setShowNutrientGuide] = useState(false);
   const cameraRef = useRef(null);
   const menuOptionsRef = useRef(null);
   const analyzeRef = useRef(null);
   const retryCountRef = useRef(0);
   const scrollRef = useRef(null);
+  const [kbPad, setKbPad] = useState(0);
   const { registerRef } = useTour();
 
   useEffect(() => {
@@ -71,6 +87,21 @@ export default function CameraScreen({ navigation }) {
     const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
     return () => sub.remove();
   }, [mode]);
+
+  useEffect(() => {
+    setKbPad(insetBottom);
+    const showEv = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEv = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const onShow = (e) => {
+      // Always add insetBottom: Android often omits the nav-bar height from endCoordinates
+      setKbPad(e.endCoordinates.height + insetBottom);
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150);
+    };
+    const onHide = () => setKbPad(insetBottom);
+    const s1 = Keyboard.addListener(showEv, onShow);
+    const s2 = Keyboard.addListener(hideEv, onHide);
+    return () => { s1.remove(); s2.remove(); };
+  }, [insetBottom]);
 
   const pickFromGallery = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -116,6 +147,7 @@ export default function CameraScreen({ navigation }) {
       const analysis = await analyzeFoodImage(imageUri, report, diet, lang);
       retryCountRef.current = 0;
       setResult(analysis);
+      setOriginalResult(analysis);
       setChatMessages([]);
       setMode('result');
       setLoading(false);
@@ -158,11 +190,14 @@ export default function CameraScreen({ navigation }) {
   const recalculate = async () => {
     setShowRecalculate(false);
     setRecalculating(true);
+    const beforeScore = result.riskScore;
+    const beforeLevel = result.riskLevel;
     try {
       const lang = await getLanguagePreference();
       const updated = await recalculateMealScore(result, chatMessages, latestReport, lang);
+      setScoreComparison({ beforeScore, beforeLevel, afterScore: updated.riskScore, afterLevel: updated.riskLevel });
       setResult(updated);
-      setTimeout(() => scrollRef.current?.scrollTo({ y: 0, animated: true }), 100);
+      setTimeout(() => scrollRef.current?.scrollTo({ y: 260, animated: true }), 400);
     } catch {
       // silently ignore — keep existing result
     } finally {
@@ -178,7 +213,7 @@ export default function CameraScreen({ navigation }) {
     navigation.navigate('HomeTab');
   };
 
-  const reset = () => { setMode('menu'); setImageUri(null); setResult(null); setChatMessages([]); setChatInput(''); setShowRecalculate(false); };
+  const reset = () => { setMode('menu'); setImageUri(null); setResult(null); setOriginalResult(null); setScoreComparison(null); setChatMessages([]); setChatInput(''); setShowRecalculate(false); };
 
   // ── Camera view ────────────────────────────────────────────────────────────
   if (mode === 'camera') {
@@ -251,11 +286,38 @@ export default function CameraScreen({ navigation }) {
     const dot = result.canEat ? (STATUS_DOT[result.canEat] || STATUS_DOT['IN MODERATION']) : null;
 
     return (
-      <KeyboardAvoidingView style={styles.full} behavior="padding" keyboardVerticalOffset={Platform.OS === 'android' ? 0 : 0}>
-        <ScrollView ref={scrollRef} style={styles.container} showsVerticalScrollIndicator={false}>
+      <View style={[styles.full, { paddingBottom: kbPad }]}>
+        <ScrollView ref={scrollRef} style={styles.container} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
           <Image source={{ uri: imageUri }} style={styles.resultImage} resizeMode="cover" />
 
           <View style={styles.resultContent}>
+            {scoreComparison && (
+              <View style={styles.scoreCompBanner}>
+                <Text style={styles.scoreCompBannerTitle}>Score Updated</Text>
+                <View style={styles.scoreCompBannerRow}>
+                  <View style={styles.scoreCompBannerItem}>
+                    <Text style={styles.scoreCompBannerLabel}>Before</Text>
+                    <Text style={styles.scoreCompBannerScore}>{scoreComparison.beforeScore}/10</Text>
+                    <Text style={[styles.scoreCompBannerLevel, { color: scoreComparison.beforeLevel === 'HIGH' ? '#FF453A' : scoreComparison.beforeLevel === 'LOW' ? '#30D158' : '#FF9F0A' }]}>{scoreComparison.beforeLevel}</Text>
+                  </View>
+                  <View style={styles.scoreCompBannerArrow}>
+                    <View style={styles.scoreCompArrowLine} />
+                    <View style={styles.scoreCompArrowHead} />
+                  </View>
+                  <View style={styles.scoreCompBannerItem}>
+                    <Text style={styles.scoreCompBannerLabel}>After</Text>
+                    <Text style={[styles.scoreCompBannerScore, { color: scoreComparison.afterScore < scoreComparison.beforeScore ? '#30D158' : scoreComparison.afterScore > scoreComparison.beforeScore ? '#FF453A' : '#6C63FF' }]}>{scoreComparison.afterScore}/10</Text>
+                    <Text style={[styles.scoreCompBannerLevel, { color: scoreComparison.afterLevel === 'HIGH' ? '#FF453A' : scoreComparison.afterLevel === 'LOW' ? '#30D158' : '#FF9F0A' }]}>{scoreComparison.afterLevel}</Text>
+                  </View>
+                  <View style={[styles.scoreCompTag, { backgroundColor: scoreComparison.afterScore < scoreComparison.beforeScore ? '#E6FBF5' : scoreComparison.afterScore > scoreComparison.beforeScore ? '#FFF0F1' : '#EEF0FF' }]}>
+                    <Text style={[styles.scoreCompTagText, { color: scoreComparison.afterScore < scoreComparison.beforeScore ? '#00C48C' : scoreComparison.afterScore > scoreComparison.beforeScore ? '#FF4757' : '#6C63FF' }]}>
+                      {scoreComparison.afterScore < scoreComparison.beforeScore ? 'Improved' : scoreComparison.afterScore > scoreComparison.beforeScore ? 'Worsened' : 'Unchanged'}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            )}
+
             {cfg && (
               <View style={[styles.canEatCard, { backgroundColor: cfg.bg, borderColor: cfg.border }]}>
                 <View style={[styles.canEatDot, { backgroundColor: dot.color }]} />
@@ -275,10 +337,32 @@ export default function CameraScreen({ navigation }) {
             </View>
 
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>Estimated Nutrients</Text>
+              <View style={styles.cardTitleRow}>
+                <Text style={styles.cardTitle}>Estimated Nutrients</Text>
+                <TouchableOpacity style={styles.infoBtn} onPress={() => setShowNutrientGuide(v => !v)}>
+                  <Text style={styles.infoBtnText}>i</Text>
+                </TouchableOpacity>
+              </View>
               {Object.entries(result.nutrients || {}).map(([k, v]) => (
                 <NutrientRow key={k} name={k} value={v} />
               ))}
+              {showNutrientGuide && (
+                <View style={styles.nutrientGuide}>
+                  <View style={styles.nutrientGuideDivider} />
+                  <Text style={styles.nutrientGuideTitle}>What do these mean?</Text>
+                  {NUTRIENT_GUIDE.map(item => (
+                    <View key={item.key} style={styles.nutrientGuideItem}>
+                      <View style={styles.nutrientGuideHeader}>
+                        <Text style={styles.nutrientGuideLabel}>{item.label}</Text>
+                        <View style={[styles.nutrientGuideTag, item.impact === 'bad' ? styles.nutrientGuideTagBad : item.impact === 'good' ? styles.nutrientGuideTagGood : styles.nutrientGuideTagNeutral]}>
+                          <Text style={[styles.nutrientGuideTagText, item.impact === 'bad' ? { color: '#FF4757' } : item.impact === 'good' ? { color: '#00C48C' } : { color: '#8E8E93' }]}>{item.limit}</Text>
+                        </View>
+                      </View>
+                      <Text style={styles.nutrientGuideDesc}>{item.desc}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
             </View>
 
             {result.warnings?.length > 0 && (
@@ -311,13 +395,6 @@ export default function CameraScreen({ navigation }) {
                 <Text style={styles.recText}>{result.recommendation}</Text>
               </View>
             )}
-
-            <TouchableOpacity style={styles.saveBtn} onPress={saveAndGoHome}>
-              <Text style={styles.saveBtnText}>Save to Log</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.discardBtn} onPress={reset}>
-              <Text style={styles.discardBtnText}>Discard</Text>
-            </TouchableOpacity>
 
             {/* ── Chat section ── */}
             <View style={styles.chatSection}>
@@ -357,11 +434,11 @@ export default function CameraScreen({ navigation }) {
                 </View>
               )}
             </View>
-            <View style={{ height: 80 }} />
+            <View style={{ height: 120 }} />
           </View>
         </ScrollView>
 
-        {/* Sticky chat input */}
+        {/* Sticky bars — paddingBottom on parent lifts these above keyboard */}
         <View style={styles.chatInputBar}>
           <TextInput
             style={styles.chatInput}
@@ -380,7 +457,15 @@ export default function CameraScreen({ navigation }) {
             <View style={styles.sendArrow} />
           </TouchableOpacity>
         </View>
-      </KeyboardAvoidingView>
+        <View style={styles.actionBar}>
+          <TouchableOpacity style={styles.actionDiscard} onPress={reset}>
+            <Text style={styles.actionDiscardText}>Discard</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.actionSave} onPress={saveAndGoHome}>
+            <Text style={styles.actionSaveText}>Save to Log</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
     );
   }
 
@@ -481,7 +566,24 @@ const styles = StyleSheet.create({
   resultFoods: { fontSize: 18, fontWeight: '800', color: '#1A1A2E' },
   resultServing: { fontSize: 13, color: '#9CA3AF', marginTop: 3 },
   card: { backgroundColor: '#fff', borderRadius: 18, padding: 18, marginBottom: 12, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 10, elevation: 2 },
-  cardTitle: { fontSize: 12, fontWeight: '800', color: '#8E8E93', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 },
+  cardTitleRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
+  cardTitle: { fontSize: 12, fontWeight: '800', color: '#8E8E93', textTransform: 'uppercase', letterSpacing: 0.5, flex: 1 },
+  infoBtn: { width: 20, height: 20, borderRadius: 10, backgroundColor: '#EEF0FF', alignItems: 'center', justifyContent: 'center' },
+  infoBtnText: { fontSize: 12, fontWeight: '800', color: '#6C63FF' },
+
+  // Nutrient guide
+  nutrientGuide: { marginTop: 8 },
+  nutrientGuideDivider: { height: 1, backgroundColor: '#F2F2F7', marginBottom: 14 },
+  nutrientGuideTitle: { fontSize: 11, fontWeight: '800', color: '#6C63FF', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 12 },
+  nutrientGuideItem: { marginBottom: 14 },
+  nutrientGuideHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 4, gap: 8 },
+  nutrientGuideLabel: { fontSize: 13, fontWeight: '700', color: '#1A1A2E', flex: 1 },
+  nutrientGuideTag: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 },
+  nutrientGuideTagBad: { backgroundColor: '#FFF0F1' },
+  nutrientGuideTagGood: { backgroundColor: '#E6FBF5' },
+  nutrientGuideTagNeutral: { backgroundColor: '#F2F2F7' },
+  nutrientGuideTagText: { fontSize: 11, fontWeight: '700' },
+  nutrientGuideDesc: { fontSize: 12, color: '#6B7280', lineHeight: 17 },
   warnCard: { backgroundColor: '#FFF8EC', borderLeftWidth: 3, borderLeftColor: '#FF8C00' },
   warnRow: { flexDirection: 'row', gap: 10, marginBottom: 6, alignItems: 'flex-start' },
   warnBullet: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#FF8C00', marginTop: 5 },
@@ -492,10 +594,26 @@ const styles = StyleSheet.create({
   benefitText: { fontSize: 13, color: '#005A3C', flex: 1, lineHeight: 18 },
   recCard: { backgroundColor: '#EEF0FF', borderLeftWidth: 3, borderLeftColor: '#6C63FF' },
   recText: { fontSize: 14, color: '#3730A3', lineHeight: 21 },
-  saveBtn: { backgroundColor: '#6C63FF', padding: 18, borderRadius: 16, alignItems: 'center', marginTop: 8, marginBottom: 10, shadowColor: '#6C63FF', shadowOpacity: 0.3, shadowRadius: 12, elevation: 4 },
-  saveBtnText: { color: '#fff', fontSize: 16, fontWeight: '800' },
-  discardBtn: { padding: 14, alignItems: 'center', marginBottom: 8 },
-  discardBtnText: { color: '#FF4757', fontSize: 15, fontWeight: '600' },
+  // Score comparison banner
+  scoreCompBanner: { backgroundColor: '#1A1A2E', borderRadius: 18, padding: 18, marginBottom: 12 },
+  scoreCompBannerTitle: { fontSize: 11, fontWeight: '800', color: '#6C63FF', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 14 },
+  scoreCompBannerRow: { flexDirection: 'row', alignItems: 'center', gap: 0 },
+  scoreCompBannerItem: { flex: 1, alignItems: 'center', gap: 4 },
+  scoreCompBannerLabel: { fontSize: 11, color: '#8E8E93', fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.4 },
+  scoreCompBannerScore: { fontSize: 26, fontWeight: '800', color: '#fff' },
+  scoreCompBannerLevel: { fontSize: 11, fontWeight: '700' },
+  scoreCompBannerArrow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 4 },
+  scoreCompArrowLine: { width: 20, height: 2, backgroundColor: '#8E8E93' },
+  scoreCompArrowHead: { width: 0, height: 0, borderTopWidth: 5, borderBottomWidth: 5, borderLeftWidth: 8, borderTopColor: 'transparent', borderBottomColor: 'transparent', borderLeftColor: '#8E8E93' },
+  scoreCompTag: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, marginLeft: 8 },
+  scoreCompTagText: { fontSize: 12, fontWeight: '800' },
+
+  // Action bar
+  actionBar: { flexDirection: 'row', gap: 10, paddingHorizontal: 16, paddingVertical: 10, backgroundColor: '#fff', borderTopWidth: 0.5, borderTopColor: '#E5E5EA' },
+  actionDiscard: { flex: 1, paddingVertical: 13, borderRadius: 14, alignItems: 'center', borderWidth: 1.5, borderColor: '#FF4757' },
+  actionDiscardText: { color: '#FF4757', fontSize: 15, fontWeight: '700' },
+  actionSave: { flex: 2, paddingVertical: 13, borderRadius: 14, alignItems: 'center', backgroundColor: '#6C63FF', shadowColor: '#6C63FF', shadowOpacity: 0.3, shadowRadius: 8, elevation: 3 },
+  actionSaveText: { color: '#fff', fontSize: 15, fontWeight: '800' },
 
   // Chat
   chatSection: { marginTop: 8 },

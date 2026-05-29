@@ -160,7 +160,6 @@ function MainTabs() {
             borderTopColor: '#E5E5EA',
             paddingTop: 8,
             paddingBottom: insets.bottom + 4,
-            height: 52 + insets.bottom,
             elevation: 16,
             shadowColor: '#000',
             shadowOpacity: 0.1,
