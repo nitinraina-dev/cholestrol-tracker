@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { analyzeFoodImage, analyzeTextMeal, analyzeProductText, chatAboutMeal, recalculateMealScore, RateLimitError } from '../services/gemini';
+import { analyzeFoodImage, analyzeTextMeal, analyzeProductText, chatAboutMeal, recalculateMealScore, RateLimitError, DailyQuotaError } from '../services/gemini';
 import { saveMeal, getMeals } from '../services/storage';
 import { getLatestReport, getReports } from '../services/reportStorage';
 import { getDietPreference, getLanguagePreference } from '../services/settingsStorage';
@@ -145,9 +145,11 @@ export default function CameraScreen({ navigation }) {
   const analyze = async () => {
     setCountdown(null);
     setLoading(true);
+    console.log('[Camera] analyze() called, imageUri:', imageUri?.slice(-60));
     try {
       const [report, diet, lang] = await Promise.all([getLatestReport(), getDietPreference(), getLanguagePreference()]);
       setLatestReport(report);
+      console.log('[Camera] calling analyzeFoodImage, diet:', diet, 'lang:', lang, 'hint:', foodHint || 'none');
       const analysis = await analyzeFoodImage(imageUri, report, diet, lang, foodHint);
       retryCountRef.current = 0;
       setResult(analysis);
@@ -156,13 +158,27 @@ export default function CameraScreen({ navigation }) {
       setMode('result');
       setLoading(false);
     } catch (e) {
-      if (e instanceof RateLimitError && retryCountRef.current < 2 && (e.waitMs || 0) <= 120000) {
+      console.error('[Camera] analyze() error:', e?.name, e?.message, 'waitMs:', e?.waitMs);
+      if (e instanceof DailyQuotaError) {
+        retryCountRef.current = 0;
+        setLoading(false);
+        setCountdown(null);
+        Alert.alert('Daily limit reached', 'You have used up today\'s AI quota. Please try again after midnight.');
+      } else if (e instanceof RateLimitError && retryCountRef.current < 2 && (e.waitMs || 0) <= 120000) {
         retryCountRef.current++;
         setCountdown(Math.ceil((e.waitMs || 60000) / 1000));
+      } else if (e?.message?.startsWith('HTTP_')) {
+        retryCountRef.current = 0;
+        setLoading(false);
+        setCountdown(null);
+        const code = e.message.replace('HTTP_', '');
+        const msg = code === '403' ? 'API key issue — check your key is valid and has Gemini API enabled.' : `Server error (${code}). Please try again later.`;
+        Alert.alert('Unable to analyze', msg);
       } else {
         retryCountRef.current = 0;
         setLoading(false);
-        Alert.alert('Unable to analyze', 'Please try again in a few minutes.');
+        setCountdown(null);
+        Alert.alert('Unable to analyze', e?.message ? `${e.message}` : 'Please try again in a few minutes.');
       }
     }
   };
@@ -180,8 +196,12 @@ export default function CameraScreen({ navigation }) {
       setOriginalResult(analysis);
       setChatMessages([]);
       setMode('result');
-    } catch {
-      Alert.alert('Unable to analyze', 'Please try again in a few minutes.');
+    } catch (e) {
+      if (e instanceof DailyQuotaError) {
+        Alert.alert('Daily limit reached', 'You have used up today\'s AI quota. Please try again after midnight.');
+      } else {
+        Alert.alert('Unable to analyze', 'Please try again in a few minutes.');
+      }
     } finally {
       setLoading(false);
     }
@@ -251,18 +271,37 @@ export default function CameraScreen({ navigation }) {
     if (barcodeScanned || barcodeLoading) return;
     setBarcodeScanned(true);
     setBarcodeLoading(true);
+
+    // ── Step 1: fetch from Open Food Facts ──────────────────────────────────
+    let product;
     try {
+      console.log('[Barcode] Fetching product:', data);
       const resp = await fetch(`https://world.openfoodfacts.org/api/v2/product/${data}.json`);
+      console.log('[Barcode] OpenFoodFacts status:', resp.status);
       const json = await resp.json();
+      console.log('[Barcode] Product found:', json.status, json.product?.product_name);
       if (json.status !== 1 || !json.product) {
         Alert.alert('Product not found', 'This barcode was not found in the food database. Try another product.', [
           { text: 'Try Again', onPress: () => { setBarcodeScanned(false); setBarcodeLoading(false); } },
           { text: 'Cancel', onPress: reset },
         ]);
+        setBarcodeLoading(false);
         return;
       }
-      const p = json.product;
-      const n = p.nutriments || {};
+      product = json.product;
+    } catch (fetchErr) {
+      console.error('[Barcode] OpenFoodFacts fetch error:', fetchErr?.message ?? fetchErr);
+      Alert.alert('Network error', 'Could not reach the food database. Check your internet connection.', [
+        { text: 'Try Again', onPress: () => { setBarcodeScanned(false); setBarcodeLoading(false); } },
+        { text: 'Cancel', onPress: reset },
+      ]);
+      setBarcodeLoading(false);
+      return;
+    }
+
+    // ── Step 2: AI analysis ──────────────────────────────────────────────────
+    try {
+      const n = product.nutriments || {};
       const nutriments = {
         saturatedFat: n['saturated-fat_serving'] ?? n['saturated-fat_100g'] ?? 0,
         transFat:     n['trans-fat_serving'] ?? n['trans-fat_100g'] ?? 0,
@@ -275,10 +314,11 @@ export default function CameraScreen({ navigation }) {
       };
       const [report, diet, lang] = await Promise.all([getLatestReport(), getDietPreference(), getLanguagePreference()]);
       setLatestReport(report);
+      console.log('[Barcode] Calling analyzeProductText for:', product.product_name);
       const analysis = await analyzeProductText(
-        p.product_name || p.product_name_en || 'Unknown Product',
-        p.brands || '',
-        p.serving_size || '',
+        product.product_name || product.product_name_en || 'Unknown Product',
+        product.brands || '',
+        product.serving_size || '',
         nutriments,
         report,
         diet,
@@ -289,10 +329,20 @@ export default function CameraScreen({ navigation }) {
       setChatMessages([]);
       setMode('result');
     } catch (e) {
-      Alert.alert('Error', 'Could not fetch product info. Check your internet connection.', [
-        { text: 'Try Again', onPress: () => { setBarcodeScanned(false); setBarcodeLoading(false); } },
-        { text: 'Cancel', onPress: reset },
-      ]);
+      console.error('[Barcode] AI analysis error:', e?.name, e?.message);
+      if (e instanceof DailyQuotaError) {
+        Alert.alert('Daily limit reached', 'You have used up today\'s AI quota. Please try again after midnight.', [{ text: 'OK', onPress: reset }]);
+      } else if (e instanceof RateLimitError || e?.message?.startsWith('HTTP_')) {
+        Alert.alert('AI unavailable', 'Could not analyze this product right now. Please try again in a moment.', [
+          { text: 'Try Again', onPress: () => { setBarcodeScanned(false); setBarcodeLoading(false); } },
+          { text: 'Cancel', onPress: reset },
+        ]);
+      } else {
+        Alert.alert('AI error', `Analysis failed: ${e?.message ?? 'unknown error'}`, [
+          { text: 'Try Again', onPress: () => { setBarcodeScanned(false); setBarcodeLoading(false); } },
+          { text: 'Cancel', onPress: reset },
+        ]);
+      }
     } finally {
       setBarcodeLoading(false);
     }
@@ -374,7 +424,7 @@ export default function CameraScreen({ navigation }) {
               <ActivityIndicator size="large" color="#6C63FF" />
               <Text style={styles.loadingTitle}>Analyzing your meal</Text>
               <Text style={styles.loadingHint}>
-                {countdown !== null ? `Ready in ${countdown}s` : 'Checking VLDL, LDL and Triglycerides impact'}
+                {countdown !== null ? `Trying backup server... ${countdown}s` : 'Checking VLDL, LDL and Triglycerides impact'}
               </Text>
               {latestReport && (
                 <View style={styles.loadingReportBadge}>

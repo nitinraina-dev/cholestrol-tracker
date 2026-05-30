@@ -21,12 +21,19 @@ const keyCooldowns = new Array(Math.max(API_KEYS.length, 1)).fill(0);
 // Start key index rotates after each successful call for load distribution.
 let rotationIndex = 0;
 
-// ── Error type callers can detect to show a countdown ───────────────────────
+// ── Error types callers can detect ──────────────────────────────────────────
 export class RateLimitError extends Error {
   constructor(waitMs) {
     super('rate_limit');
     this.name = 'RateLimitError';
     this.waitMs = waitMs; // ms until earliest key recovers
+  }
+}
+
+export class DailyQuotaError extends Error {
+  constructor() {
+    super('daily_quota');
+    this.name = 'DailyQuotaError';
   }
 }
 
@@ -236,13 +243,18 @@ function fixJsonStrings(raw) {
 // ── Core API call with automatic key rotation ────────────────────────────────
 async function callAI(parts, maxOutputTokens = 4096, schema = null, temperature = 0.1) {
   if (API_KEYS.length === 0) {
+    console.error('[Gemini] No API keys found — check EXPO_PUBLIC_GEMINI_API_KEY in .env');
     throw new Error('AI service is not set up. Please contact support.');
   }
+  console.log(`[Gemini] callAI — keys: ${API_KEYS.length}, parts: ${parts.length}, maxTokens: ${maxOutputTokens}, rotationIndex: ${rotationIndex}`);
 
   const generationConfig = { temperature, maxOutputTokens };
   if (schema) {
     generationConfig.responseMimeType = 'application/json';
     generationConfig.responseSchema = schema;
+    // Disable thinking for structured output — thinking tokens count against maxOutputTokens
+    // in gemini-2.5-flash, consuming most of the budget before the JSON response even starts.
+    generationConfig.thinkingConfig = { thinkingBudget: 0 };
   }
   const body = JSON.stringify({ contents: [{ parts }], generationConfig });
 
@@ -262,30 +274,63 @@ async function callAI(parts, maxOutputTokens = 4096, schema = null, temperature 
 
     if (response.status === 429) {
       const txt = await response.text();
-      const match = txt.match(/retry in ([\d.]+)s/i);
-      const waitSec = match ? Math.ceil(parseFloat(match[1])) : 60;
-      keyCooldowns[i] = Date.now() + waitSec * 1000;
-      continue; // silently move to the next key
+      const perMinuteMatch = txt.match(/retry in ([\d.]+)s/i);
+      if (perMinuteMatch) {
+        // Per-minute quota: short cooldown, try next key immediately
+        const waitSec = Math.ceil(parseFloat(perMinuteMatch[1]));
+        keyCooldowns[i] = Date.now() + waitSec * 1000;
+        console.warn(`[Gemini] Key ${i} per-minute limit — cooldown ${waitSec}s`);
+      } else {
+        // Daily quota (no "retry in Xs" in body) — cool down for 2h, no point retrying soon
+        keyCooldowns[i] = Date.now() + 2 * 60 * 60 * 1000;
+        console.warn(`[Gemini] Key ${i} daily quota exhausted. Body: ${txt.slice(0, 200)}`);
+      }
+      continue;
+    }
+
+    if (response.status >= 500) {
+      // Server-side error (503 overloaded, 500 internal, etc.) — temporary, try next key
+      const txt = await response.text();
+      console.warn(`[Gemini] Key ${i} server error ${response.status} — trying next key. ${txt.slice(0, 150)}`);
+      keyCooldowns[i] = Date.now() + 15 * 1000; // 15s cooldown then this key is usable again
+      continue;
     }
 
     if (!response.ok) {
-      // Non-rate-limit error — don't expose internal details to the user.
-      throw new Error('Something went wrong. Please try again.');
+      const txt = await response.text();
+      console.error(`[Gemini] Key ${i} HTTP ${response.status}: ${txt.slice(0, 300)}`);
+      throw new Error(`HTTP_${response.status}`);
+    }
+
+    // Got a 200 — check the body is usable before committing this key as successful.
+    const data = await response.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) {
+      console.warn(`[Gemini] Key ${i} returned empty response — trying next key.`, JSON.stringify(data).slice(0, 200));
+      keyCooldowns[i] = Date.now() + 5 * 1000;
+      continue;
+    }
+
+    const cleaned = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    const result = fixJsonStrings(cleaned);
+
+    // If caller expects JSON (schema provided), validate it parses before committing.
+    if (schema) {
+      try {
+        JSON.parse(result);
+      } catch (parseErr) {
+        console.warn(`[Gemini] Key ${i} JSON parse failed (likely truncated) — trying next key. ${parseErr.message}. Preview: ${result.slice(-100)}`);
+        keyCooldowns[i] = Date.now() + 5 * 1000;
+        continue;
+      }
     }
 
     // Success — advance rotation index so the next call starts on the next key.
     rotationIndex = (i + 1) % API_KEYS.length;
-
-    const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) throw new Error('Please try again.');
-
-    const cleaned = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-    return fixJsonStrings(cleaned);
+    return result;
   }
 
-  // All keys are either cooling down or just exhausted this pass.
-  // Tell the caller how long until the earliest key recovers.
+  // All keys exhausted this pass — check why.
   const now = Date.now();
   let earliest = Infinity;
   for (let i = 0; i < API_KEYS.length; i++) {
@@ -293,20 +338,37 @@ async function callAI(parts, maxOutputTokens = 4096, schema = null, temperature 
       earliest = keyCooldowns[i];
     }
   }
-  throw new RateLimitError(earliest === Infinity ? 60000 : Math.max(0, earliest - now));
+  const waitMs = earliest === Infinity ? 60000 : Math.max(0, earliest - now);
+  // If all keys are cooling for > 1 hour it's a daily quota situation, not per-minute
+  if (waitMs > 60 * 60 * 1000) throw new DailyQuotaError();
+  throw new RateLimitError(waitMs);
 }
 
 // ── Public exports ────────────────────────────────────────────────────────────
 
 export async function analyzeFoodImage(imageUri, report = null, dietPreference = 'omnivore', language = 'english', textHint = '') {
-  const base64 = await new File(imageUri).base64();
+  console.log('[Gemini] analyzeFoodImage: encoding', imageUri?.slice(-60));
+  let base64;
+  try {
+    base64 = await new File(imageUri).base64();
+    console.log('[Gemini] Image encoded OK, length:', base64?.length ?? 0);
+  } catch (encErr) {
+    console.error('[Gemini] Image encoding FAILED:', encErr?.message ?? encErr);
+    throw encErr;
+  }
+  const lower = (imageUri || '').toLowerCase();
+  const mimeType = lower.includes('.png') ? 'image/png'
+    : lower.includes('.webp') ? 'image/webp'
+    : lower.includes('.heic') || lower.includes('.heif') ? 'image/heic'
+    : 'image/jpeg';
+  console.log('[Gemini] Detected mime type:', mimeType);
   const hintPart = textHint.trim()
     ? `\nUSER NOTE: The user says this meal contains: "${textHint.trim()}". Use this to resolve any ambiguity in identifying the food (e.g. distinguish tofu from paneer, use exact item names the user provided).`
     : '';
   const text = await callAI([
     { text: buildFoodPrompt(report, dietPreference, language) + hintPart },
-    { inline_data: { mime_type: 'image/jpeg', data: base64 } },
-  ], 1024, FOOD_SCHEMA);
+    { inline_data: { mime_type: mimeType, data: base64 } },
+  ], 2048, FOOD_SCHEMA);
   return JSON.parse(text);
 }
 

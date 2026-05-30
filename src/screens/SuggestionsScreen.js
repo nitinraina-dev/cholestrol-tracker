@@ -3,7 +3,7 @@ import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { getMealSuggestions, RateLimitError } from '../services/gemini';
+import { getMealSuggestions, RateLimitError, DailyQuotaError } from '../services/gemini';
 import { getLatestReport } from '../services/reportStorage';
 import { getDietPreference, DIET_OPTIONS, getLanguagePreference, LANGUAGE_OPTIONS } from '../services/settingsStorage';
 
@@ -180,12 +180,16 @@ export default function SuggestionsScreen() {
       retryCountRef.current = 0;
       setSuggestions(results);
     } catch (e) {
-      if (e instanceof RateLimitError && retryCountRef.current < 2 && (e.waitMs || 0) <= 120000) {
+      console.error('[Suggestions] fetch error:', e?.name, e?.message, 'waitMs:', e?.waitMs);
+      if (e instanceof DailyQuotaError) {
+        retryCountRef.current = 0;
+        setError('Daily AI limit reached. Suggestions will be available again after midnight.');
+      } else if (e instanceof RateLimitError && retryCountRef.current < 2 && (e.waitMs || 0) <= 120000) {
         retryCountRef.current++;
         setCountdown(Math.ceil((e.waitMs || 60000) / 1000));
       } else {
         retryCountRef.current = 0;
-        setError('Could not load suggestions. Please try again in a few minutes.');
+        setError(`Could not load suggestions: ${e?.message ?? 'unknown error'}. Please try again.`);
       }
     } finally {
       setLoading(false);
